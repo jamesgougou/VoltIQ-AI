@@ -11,3 +11,10 @@ export function countWords(text: string): number {
   if (!trimmed) return 0;
   return trimmed.split(/\s+/).length;
 }
+
+export function formatMessageTime(date: Date): string {
+  return date.toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}

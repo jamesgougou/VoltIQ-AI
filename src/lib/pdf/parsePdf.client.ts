@@ -1,5 +1,10 @@
 "use client";
 
+import {
+  MAX_PDF_SIZE_BYTES,
+  getPdfSizeError,
+} from "@/lib/upload/limits";
+
 function extractPageText(
   items: Array<{ str?: string } | { type: string }>,
 ): string {
@@ -23,9 +28,9 @@ export async function parsePdf(
     throw new Error("Please select a valid PDF file.");
   }
 
-  const maxSizeBytes = 10 * 1024 * 1024;
+  const maxSizeBytes = MAX_PDF_SIZE_BYTES;
   if (file.size > maxSizeBytes) {
-    throw new Error("PDF file must be 10 MB or smaller.");
+    throw new Error(getPdfSizeError());
   }
 
   const pdfjs = await import("pdfjs-dist");

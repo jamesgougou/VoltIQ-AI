@@ -1,83 +1,87 @@
 "use client";
 
 import { useState } from "react";
-import { PDFPreview } from "@/components/PDFPreview";
-import { PDFUploader } from "@/components/PDFUploader";
-import { DocumentSummary } from "@/components/upload/DocumentSummary";
-import { ImageUploadCard } from "@/components/upload/ImageUploadCard";
-import { TextPasteCard } from "@/components/upload/TextPasteCard";
-import type { PdfParseResult } from "@/types/pdf";
+import { ChatPanel } from "@/components/ChatPanel";
+import { ImageUploadManager } from "@/components/upload/ImageUploadManager";
+import { PdfUploadManager } from "@/components/upload/PdfUploadManager";
+import { TextPasteManager } from "@/components/upload/TextPasteManager";
+import type { PdfDocument, PdfParseResult } from "@/types/pdf";
 
 export function UploadSection() {
-  const [pdfData, setPdfData] = useState<PdfParseResult | null>(null);
+  const [pdfs, setPdfs] = useState<PdfDocument[]>([]);
   const [resetKey, setResetKey] = useState(0);
+  const [hasImages, setHasImages] = useState(false);
+  const [hasText, setHasText] = useState(false);
 
-  function handleParsed(result: PdfParseResult) {
-    setPdfData(result);
+  function handlePdfAdd(result: PdfParseResult) {
+    setPdfs((current) => [
+      ...current,
+      {
+        ...result,
+        id: crypto.randomUUID(),
+      },
+    ]);
   }
 
-  function handleError() {
-    setPdfData(null);
-  }
-
-  function handlePdfClear() {
-    setPdfData(null);
+  function handlePdfRemove(id: string) {
+    setPdfs((current) => current.filter((pdf) => pdf.id !== id));
   }
 
   function handleClearAll() {
-    setPdfData(null);
+    setPdfs([]);
+    setHasImages(false);
+    setHasText(false);
     setResetKey((key) => key + 1);
   }
 
-  const hasPdf = Boolean(pdfData?.text);
+  const hasDocuments = pdfs.length > 0 || hasImages || hasText;
 
   return (
-    <section>
-      <div className="mb-8 flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h2 className="text-2xl font-semibold tracking-tight text-slate-900">
-            Add your content
-          </h2>
-          <p className="mt-2 text-slate-500">
-            Upload documents, images, or paste text to get started with VoltIQ
-            AI.
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={handleClearAll}
-          className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-600 transition-colors hover:border-red-200 hover:bg-red-50 hover:text-red-700"
-        >
-          Clear All
-        </button>
-      </div>
+    <section className="flex flex-col gap-6">
+      <ChatPanel hasDocuments={hasDocuments} />
 
-      <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-        <PDFUploader
-          key={`pdf-${resetKey}`}
-          onParsed={handleParsed}
-          onError={handleError}
-          onClear={handlePdfClear}
-        />
-        <ImageUploadCard key={`images-${resetKey}`} />
-        <TextPasteCard key={`text-${resetKey}`} />
-      </div>
+      <section
+        className="rounded-xl border border-slate-200 bg-white shadow-sm"
+        aria-labelledby="documents-heading"
+      >
+        <div className="flex items-center justify-between gap-3 border-b border-slate-100 px-4 py-3 sm:px-5">
+          <div>
+            <h2
+              id="documents-heading"
+              className="text-sm font-semibold text-slate-900"
+            >
+              Documents
+            </h2>
+            <p className="mt-0.5 text-xs text-slate-500">
+              PDFs, images, and pasted text used as AI context
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={handleClearAll}
+            className="shrink-0 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 transition-colors hover:border-red-200 hover:bg-red-50 hover:text-red-700 sm:text-sm"
+          >
+            Clear All
+          </button>
+        </div>
 
-      {hasPdf && pdfData && (
-        <div className="mt-8 space-y-6">
-          <DocumentSummary
-            fileName={pdfData.fileName}
-            fileSize={pdfData.fileSize}
-            totalPages={pdfData.totalPages}
-            totalCharacters={pdfData.text.length}
+        <div className="grid gap-3 p-3 sm:p-4 lg:grid-cols-3">
+          <PdfUploadManager
+            key={`pdf-${resetKey}`}
+            pdfs={pdfs}
+            onAdd={handlePdfAdd}
+            onRemove={handlePdfRemove}
           />
-          <PDFPreview
-            fileName={pdfData.fileName}
-            totalPages={pdfData.totalPages}
-            text={pdfData.text}
+          <ImageUploadManager
+            key={`images-${resetKey}`}
+            onHasContentChange={setHasImages}
+          />
+          <TextPasteManager
+            key={`text-${resetKey}`}
+            onHasContentChange={setHasText}
           />
         </div>
-      )}
+      </section>
     </section>
   );
 }

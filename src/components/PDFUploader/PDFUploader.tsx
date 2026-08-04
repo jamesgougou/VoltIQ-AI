@@ -2,6 +2,7 @@
 
 import { useRef, useState } from "react";
 import type { PdfParseResult } from "@/types/pdf";
+import { MAX_PDF_SIZE_LABEL } from "@/lib/upload/limits";
 import { UploadCard } from "@/components/upload/UploadCard";
 import { PdfIcon } from "@/components/upload/UploadIcons";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
@@ -151,7 +152,7 @@ export function PDFUploader({
                 {fileName ?? "Choose PDF file"}
               </span>
               <span className="mt-1 text-xs text-slate-400">
-                PDF up to 10 MB
+                PDF up to {MAX_PDF_SIZE_LABEL}
               </span>
             </>
           )}

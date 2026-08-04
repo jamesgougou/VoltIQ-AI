@@ -24,7 +24,11 @@ function revokeUrls(items: ImageItem[]) {
   }
 }
 
-export function ImageUploadCard() {
+type ImageUploadCardProps = {
+  onHasContentChange?: (hasContent: boolean) => void;
+};
+
+export function ImageUploadCard({ onHasContentChange }: ImageUploadCardProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const imagesRef = useRef<ImageItem[]>([]);
   const [images, setImages] = useState<ImageItem[]>([]);
@@ -32,6 +36,10 @@ export function ImageUploadCard() {
   useEffect(() => {
     imagesRef.current = images;
   }, [images]);
+
+  useEffect(() => {
+    onHasContentChange?.(images.length > 0);
+  }, [images, onHasContentChange]);
 
   useEffect(() => {
     return () => {

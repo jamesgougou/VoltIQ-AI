@@ -1,0 +1,119 @@
+"use client";
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import { getMockReply, mockReplyDelay } from "@/lib/chat/mockReply";
+import type { ChatMessage } from "@/types/chat";
+import { ChatHistory } from "./ChatHistory";
+import { ChatInput } from "./ChatInput";
+
+type ChatPanelProps = {
+  hasDocuments?: boolean;
+};
+
+function createMessage(role: ChatMessage["role"], content: string): ChatMessage {
+  return {
+    id: crypto.randomUUID(),
+    role,
+    content,
+    createdAt: new Date(),
+  };
+}
+
+export function ChatPanel({ hasDocuments = false }: ChatPanelProps) {
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [input, setInput] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+  const [focusTrigger, setFocusTrigger] = useState(0);
+  const bottomRef = useRef<HTMLDivElement>(null);
+  const previousHasDocuments = useRef(hasDocuments);
+  const previousIsLoading = useRef(isLoading);
+
+  const focusInput = useCallback(() => {
+    setFocusTrigger((current) => current + 1);
+  }, []);
+
+  const scrollToBottom = useCallback(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, []);
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages, isLoading, scrollToBottom]);
+
+  useEffect(() => {
+    if (hasDocuments && !previousHasDocuments.current) {
+      focusInput();
+    }
+    previousHasDocuments.current = hasDocuments;
+  }, [hasDocuments, focusInput]);
+
+  useEffect(() => {
+    if (previousIsLoading.current && !isLoading && hasDocuments) {
+      focusInput();
+    }
+    previousIsLoading.current = isLoading;
+  }, [isLoading, hasDocuments, focusInput]);
+
+  const handleSend = useCallback(async () => {
+    const trimmed = input.trim();
+    if (!trimmed || isLoading || !hasDocuments) return;
+
+    const userMessage = createMessage("user", trimmed);
+    setMessages((prev) => [...prev, userMessage]);
+    setInput("");
+    setIsLoading(true);
+
+    await mockReplyDelay();
+
+    const assistantMessage = createMessage("assistant", getMockReply(trimmed));
+    setMessages((prev) => [...prev, assistantMessage]);
+    setIsLoading(false);
+  }, [input, isLoading, hasDocuments]);
+
+  function handlePromptSelect(prompt: string) {
+    setInput(prompt);
+  }
+
+  const hasConversation = messages.length > 0 || isLoading;
+
+  return (
+    <section
+      className="flex flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm"
+      aria-labelledby="chat-panel-heading"
+    >
+      <div className="border-b border-slate-200 px-4 py-3 sm:px-6">
+        <h2
+          id="chat-panel-heading"
+          className="text-sm font-semibold text-slate-900"
+        >
+          AI Chat
+        </h2>
+        <p className="mt-0.5 text-xs text-slate-500">
+          Ask questions about your documents, standards, switchboards and solar
+          systems.
+        </p>
+      </div>
+
+      <div
+        className={`flex flex-col ${
+          hasConversation ? "min-h-[min(480px,calc(100vh-20rem))]" : ""
+        }`}
+      >
+        <ChatHistory
+          messages={messages}
+          isLoading={isLoading}
+          bottomRef={bottomRef}
+        />
+        <ChatInput
+          value={input}
+          onChange={setInput}
+          onSend={() => void handleSend()}
+          onPromptSelect={handlePromptSelect}
+          disabled={isLoading}
+          inputDisabled={!hasDocuments}
+          focusTrigger={focusTrigger}
+        />
+      </div>
+    </section>
+  );
+}
