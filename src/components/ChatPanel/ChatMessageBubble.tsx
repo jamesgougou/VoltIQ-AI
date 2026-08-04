@@ -1,16 +1,18 @@
 "use client";
 
+import { AssistantAnswer } from "@/components/Citations";
 import { formatMessageTime } from "@/lib/format";
 import { CopyButton } from "./CopyButton";
-import { MarkdownContent } from "./MarkdownContent";
 
 type ChatMessageBubbleProps = {
+  id: string;
   role: "user" | "assistant";
   content: string;
   createdAt: Date;
 };
 
 export function ChatMessageBubble({
+  id,
   role,
   content,
   createdAt,
@@ -63,7 +65,11 @@ export function ChatMessageBubble({
                 : "rounded-tl-md border border-slate-200/80 bg-slate-50 text-slate-800"
             }`}
           >
-            {isUser ? content : <MarkdownContent content={content} />}
+            {isUser ? (
+              content
+            ) : (
+              <AssistantAnswer content={content} messageId={id} />
+            )}
           </div>
 
           <span

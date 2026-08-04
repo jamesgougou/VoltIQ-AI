@@ -31,6 +31,7 @@ export function ChatHistory({
           {messages.map((message) => (
             <ChatMessageBubble
               key={message.id}
+              id={message.id}
               role={message.role}
               content={message.content}
               createdAt={message.createdAt}

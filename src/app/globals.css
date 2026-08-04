@@ -49,3 +49,18 @@ body {
 .typing-dot-delay-2 {
   animation-delay: 0.4s;
 }
+
+.citation-aware-answer .citation-segment > .markdown-content > :last-child {
+  display: inline;
+  margin-bottom: 0;
+}
+
+.citation-aware-answer .citation-segment > .markdown-content > h2,
+.citation-aware-answer .citation-segment > .markdown-content > h3 {
+  display: inline;
+  margin-bottom: 0;
+}
+
+.citation-inline-ref {
+  white-space: normal;
+}
