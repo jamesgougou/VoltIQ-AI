@@ -40,6 +40,7 @@ export function MarkdownContent({ content, className = "" }: MarkdownContentProp
             <ol className="mb-2 list-decimal space-y-1 pl-5 last:mb-0">{children}</ol>
           ),
           li: ({ children }) => <li className="leading-relaxed">{children}</li>,
+          hr: () => <hr className="my-3 border-slate-200" />,
           blockquote: ({ children }) => (
             <blockquote className="mb-2 border-l-2 border-violet-300 pl-3 text-slate-600 italic last:mb-0">
               {children}
