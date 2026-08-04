@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getMockReply, mockReplyDelay } from "@/lib/chat/mockReply";
 import type { ChatMessage } from "@/types/chat";
+import { AIToolsPanel } from "./AIToolsPanel";
 import { ChatHistory } from "./ChatHistory";
 import { ChatInput } from "./ChatInput";
 
@@ -54,24 +55,34 @@ export function ChatPanel({ hasDocuments = false }: ChatPanelProps) {
     previousIsLoading.current = isLoading;
   }, [isLoading, hasDocuments, focusInput]);
 
-  const handleSend = useCallback(async () => {
-    const trimmed = input.trim();
-    if (!trimmed || isLoading || !hasDocuments) return;
+  const sendMessage = useCallback(
+    async (messageOverride?: string) => {
+      const trimmed = (messageOverride ?? input).trim();
+      if (!trimmed || isLoading || !hasDocuments) return;
 
-    const userMessage = createMessage("user", trimmed);
-    setMessages((prev) => [...prev, userMessage]);
-    setInput("");
-    setIsLoading(true);
+      const userMessage = createMessage("user", trimmed);
+      setMessages((prev) => [...prev, userMessage]);
+      setInput("");
+      setIsLoading(true);
 
-    await mockReplyDelay();
+      await mockReplyDelay();
 
-    const assistantMessage = createMessage("assistant", getMockReply(trimmed));
-    setMessages((prev) => [...prev, assistantMessage]);
-    setIsLoading(false);
-  }, [input, isLoading, hasDocuments]);
+      const assistantMessage = createMessage(
+        "assistant",
+        getMockReply(trimmed),
+      );
+      setMessages((prev) => [...prev, assistantMessage]);
+      setIsLoading(false);
+    },
+    [input, isLoading, hasDocuments],
+  );
 
   function handlePromptSelect(prompt: string) {
     setInput(prompt);
+  }
+
+  function handleToolSelect(prompt: string) {
+    void sendMessage(prompt);
   }
 
   const hasConversation = messages.length > 0 || isLoading;
@@ -94,6 +105,13 @@ export function ChatPanel({ hasDocuments = false }: ChatPanelProps) {
         </p>
       </div>
 
+      <div className="border-b border-slate-100 px-4 py-3 sm:px-6">
+        <AIToolsPanel
+          onToolSelect={handleToolSelect}
+          disabled={isLoading || !hasDocuments}
+        />
+      </div>
+
       <div
         className={`flex flex-col ${
           hasConversation ? "min-h-[min(480px,calc(100vh-20rem))]" : ""
@@ -107,7 +125,7 @@ export function ChatPanel({ hasDocuments = false }: ChatPanelProps) {
         <ChatInput
           value={input}
           onChange={setInput}
-          onSend={() => void handleSend()}
+          onSend={() => void sendMessage()}
           onPromptSelect={handlePromptSelect}
           disabled={isLoading}
           inputDisabled={!hasDocuments}
