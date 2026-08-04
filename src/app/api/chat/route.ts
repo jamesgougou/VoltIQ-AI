@@ -1,0 +1,163 @@
+import OpenAI from "openai";
+import { getOpenAIClient, getOpenAIModel } from "@/lib/openai";
+import { VOLTIQ_SYSTEM_PROMPT } from "@/lib/chat/systemPrompt";
+
+export const runtime = "nodejs";
+
+const REQUEST_TIMEOUT_MS = 60_000;
+
+type ChatRequestMessage = {
+  role: "user" | "assistant";
+  content: string;
+};
+
+type ChatRequestBody = {
+  messages?: ChatRequestMessage[];
+};
+
+function errorResponse(message: string, status: number) {
+  return Response.json({ error: message }, { status });
+}
+
+function mapOpenAIError(error: unknown): { message: string; status: number } {
+  if (error instanceof OpenAI.APIError) {
+    if (error.status === 401) {
+      return {
+        message: "Your OpenAI API key appears to be invalid.",
+        status: 401,
+      };
+    }
+
+    if (error.status === 429) {
+      return {
+        message: "OpenAI rate limit reached. Please wait a moment and try again.",
+        status: 429,
+      };
+    }
+
+    return {
+      message:
+        error.message ||
+        "OpenAI returned an unexpected error. Please try again.",
+      status: error.status ?? 502,
+    };
+  }
+
+  if (error instanceof Error) {
+    if (error.message === "MISSING_API_KEY") {
+      return {
+        message:
+          "VoltIQ AI is not configured. Please add your OpenAI API key.",
+        status: 503,
+      };
+    }
+
+    if (error.name === "AbortError") {
+      return {
+        message: "The request timed out. Please try again.",
+        status: 504,
+      };
+    }
+
+    if (
+      error.message.includes("fetch failed") ||
+      error.message.includes("ECONNREFUSED") ||
+      error.message.includes("ENOTFOUND")
+    ) {
+      return {
+        message:
+          "Unable to reach VoltIQ AI. Please check your connection and try again.",
+        status: 503,
+      };
+    }
+  }
+
+  return {
+    message: "Something went wrong. Please try again.",
+    status: 500,
+  };
+}
+
+export async function POST(request: Request) {
+  let body: ChatRequestBody;
+
+  try {
+    body = (await request.json()) as ChatRequestBody;
+  } catch {
+    return errorResponse("Invalid request body.", 400);
+  }
+
+  const history = body.messages?.filter(
+    (message) =>
+      (message.role === "user" || message.role === "assistant") &&
+      typeof message.content === "string" &&
+      message.content.trim().length > 0,
+  );
+
+  if (!history?.length) {
+    return errorResponse("A message is required.", 400);
+  }
+
+  const latestUserMessage = [...history]
+    .reverse()
+    .find((message) => message.role === "user");
+
+  if (!latestUserMessage) {
+    return errorResponse("A user message is required.", 400);
+  }
+
+  try {
+    const openai = getOpenAIClient();
+    const model = getOpenAIModel();
+
+    const abortController = new AbortController();
+    const timeoutId = setTimeout(() => abortController.abort(), REQUEST_TIMEOUT_MS);
+
+    const stream = await openai.chat.completions.create(
+      {
+        model,
+        stream: true,
+        messages: [
+          { role: "system", content: VOLTIQ_SYSTEM_PROMPT },
+          ...history.map((message) => ({
+            role: message.role,
+            content: message.content.trim(),
+          })),
+        ],
+      },
+      { signal: abortController.signal },
+    );
+
+    clearTimeout(timeoutId);
+
+    const encoder = new TextEncoder();
+
+    const readable = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        try {
+          for await (const chunk of stream) {
+            const text = chunk.choices[0]?.delta?.content;
+
+            if (text) {
+              controller.enqueue(encoder.encode(text));
+            }
+          }
+
+          controller.close();
+        } catch (error) {
+          controller.error(error);
+        }
+      },
+    });
+
+    return new Response(readable, {
+      headers: {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform",
+      },
+    });
+  } catch (error) {
+    const mapped = mapOpenAIError(error);
+    return errorResponse(mapped.message, mapped.status);
+  }
+}

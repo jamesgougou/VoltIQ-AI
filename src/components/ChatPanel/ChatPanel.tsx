@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getMockReply, mockReplyDelay } from "@/lib/chat/mockReply";
+import { streamChatResponse } from "@/lib/chat/streamChat";
 import type { ChatMessage } from "@/types/chat";
 import { StudyPanel } from "@/components/Study";
 import { AIToolsPanel } from "./AIToolsPanel";
@@ -12,9 +12,13 @@ type ChatPanelProps = {
   hasDocuments?: boolean;
 };
 
-function createMessage(role: ChatMessage["role"], content: string): ChatMessage {
+function createMessage(
+  role: ChatMessage["role"],
+  content: string,
+  id?: string,
+): ChatMessage {
   return {
-    id: crypto.randomUUID(),
+    id: id ?? crypto.randomUUID(),
     role,
     content,
     createdAt: new Date(),
@@ -62,20 +66,83 @@ export function ChatPanel({ hasDocuments = false }: ChatPanelProps) {
       if (!trimmed || isLoading || !hasDocuments) return;
 
       const userMessage = createMessage("user", trimmed);
-      setMessages((prev) => [...prev, userMessage]);
+      const nextMessages = [...messages, userMessage];
+      const assistantMessageId = crypto.randomUUID();
+
+      setMessages(nextMessages);
       setInput("");
       setIsLoading(true);
 
-      await mockReplyDelay();
+      let streamedContent = "";
+      let hasStreamStarted = false;
 
-      const assistantMessage = createMessage(
-        "assistant",
-        getMockReply(trimmed),
-      );
-      setMessages((prev) => [...prev, assistantMessage]);
-      setIsLoading(false);
+      try {
+        await streamChatResponse(
+          nextMessages.map((message) => ({
+            role: message.role,
+            content: message.content,
+          })),
+          (chunk) => {
+            streamedContent += chunk;
+
+            if (!hasStreamStarted) {
+              hasStreamStarted = true;
+              setIsLoading(false);
+              setMessages((prev) => [
+                ...prev,
+                createMessage("assistant", streamedContent, assistantMessageId),
+              ]);
+              return;
+            }
+
+            setMessages((prev) =>
+              prev.map((message) =>
+                message.id === assistantMessageId
+                  ? { ...message, content: streamedContent }
+                  : message,
+              ),
+            );
+          },
+        );
+
+        if (!hasStreamStarted) {
+          setMessages((prev) => [
+            ...prev,
+            createMessage(
+              "assistant",
+              "I couldn't generate a response. Please try again.",
+              assistantMessageId,
+            ),
+          ]);
+        }
+      } catch (error) {
+        const errorMessage =
+          error instanceof Error
+            ? error.message
+            : "Something went wrong. Please try again.";
+
+        if (hasStreamStarted) {
+          setMessages((prev) =>
+            prev.map((message) =>
+              message.id === assistantMessageId
+                ? {
+                    ...message,
+                    content: `${streamedContent}\n\n---\n\n**Error:** ${errorMessage}`,
+                  }
+                : message,
+            ),
+          );
+        } else {
+          setMessages((prev) => [
+            ...prev,
+            createMessage("assistant", errorMessage, assistantMessageId),
+          ]);
+        }
+      } finally {
+        setIsLoading(false);
+      }
     },
-    [input, isLoading, hasDocuments],
+    [input, isLoading, hasDocuments, messages],
   );
 
   function handlePromptSelect(prompt: string) {

@@ -1,0 +1,96 @@
+export type ChatApiMessage = {
+  role: "user" | "assistant";
+  content: string;
+};
+
+const STREAM_TIMEOUT_MS = 65_000;
+
+export class ChatStreamError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ChatStreamError";
+  }
+}
+
+export async function streamChatResponse(
+  messages: ChatApiMessage[],
+  onChunk: (chunk: string) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), STREAM_TIMEOUT_MS);
+
+  const abortFromParent = () => controller.abort();
+  signal?.addEventListener("abort", abortFromParent);
+
+  try {
+    const response = await fetch("/api/chat", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ messages }),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      let errorMessage = "Something went wrong. Please try again.";
+
+      try {
+        const payload = (await response.json()) as { error?: string };
+        if (payload.error) {
+          errorMessage = payload.error;
+        }
+      } catch {
+        if (response.status === 401) {
+          errorMessage = "Your OpenAI API key appears to be invalid.";
+        } else if (response.status === 503) {
+          errorMessage =
+            "VoltIQ AI is not configured. Please add your OpenAI API key.";
+        } else if (response.status === 504) {
+          errorMessage = "The request timed out. Please try again.";
+        }
+      }
+
+      throw new ChatStreamError(errorMessage);
+    }
+
+    if (!response.body) {
+      throw new ChatStreamError(
+        "Unable to reach VoltIQ AI. Please check your connection and try again.",
+      );
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+
+    while (true) {
+      const { done, value } = await reader.read();
+
+      if (done) {
+        break;
+      }
+
+      const chunk = decoder.decode(value, { stream: true });
+
+      if (chunk) {
+        onChunk(chunk);
+      }
+    }
+  } catch (error) {
+    if (error instanceof ChatStreamError) {
+      throw error;
+    }
+
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new ChatStreamError("The request timed out. Please try again.");
+    }
+
+    throw new ChatStreamError(
+      "Unable to reach VoltIQ AI. Please check your connection and try again.",
+    );
+  } finally {
+    clearTimeout(timeoutId);
+    signal?.removeEventListener("abort", abortFromParent);
+  }
+}
