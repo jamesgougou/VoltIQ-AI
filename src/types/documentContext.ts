@@ -1,6 +1,5 @@
-export const DOCUMENT_CHAR_LIMIT = 15_000;
-
 export type DocumentContextItem = {
+  id: string;
   name: string;
   text: string;
   ocrText?: string;

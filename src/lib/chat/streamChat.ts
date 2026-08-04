@@ -3,12 +3,6 @@ export type ChatApiMessage = {
   content: string;
 };
 
-export type ChatApiDocument = {
-  name: string;
-  text: string;
-  ocrText?: string;
-};
-
 const STREAM_TIMEOUT_MS = 65_000;
 
 export class ChatStreamError extends Error {
@@ -20,7 +14,6 @@ export class ChatStreamError extends Error {
 
 export async function streamChatResponse(
   messages: ChatApiMessage[],
-  documents: ChatApiDocument[],
   onChunk: (chunk: string) => void,
   signal?: AbortSignal,
 ): Promise<void> {
@@ -36,7 +29,7 @@ export async function streamChatResponse(
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ messages, documents }),
+      body: JSON.stringify({ messages }),
       signal: controller.signal,
     });
 

@@ -1,7 +1,7 @@
 import OpenAI from "openai";
-import { buildSystemContent, getDocumentExtractionError } from "@/lib/chat/buildPrompt";
+import { buildSystemContentFromRetrieval } from "@/lib/chat/buildPrompt";
 import { getOpenAIClient, getOpenAIModel } from "@/lib/openai";
-import type { DocumentContextItem } from "@/types/documentContext";
+import { retrieveRelevantChunks } from "@/lib/rag/retriever";
 
 export const runtime = "nodejs";
 
@@ -14,7 +14,6 @@ type ChatRequestMessage = {
 
 type ChatRequestBody = {
   messages?: ChatRequestMessage[];
-  documents?: DocumentContextItem[];
 };
 
 function errorResponse(message: string, status: number) {
@@ -110,18 +109,6 @@ export async function POST(request: Request) {
     return errorResponse("A user message is required.", 400);
   }
 
-  const documents = body.documents?.filter(
-    (document) =>
-      typeof document.name === "string" &&
-      document.name.trim().length > 0 &&
-      (typeof document.text === "string" || typeof document.ocrText === "string"),
-  );
-
-  const extractionError = getDocumentExtractionError(documents);
-  if (extractionError) {
-    return errorResponse(extractionError, 422);
-  }
-
   const apiKey = process.env.OPENAI_API_KEY?.trim();
 
   if (!apiKey) {
@@ -141,12 +128,19 @@ export async function POST(request: Request) {
     const abortController = new AbortController();
     const timeoutId = setTimeout(() => abortController.abort(), REQUEST_TIMEOUT_MS);
 
+    const retrievedChunks = await retrieveRelevantChunks(
+      latestUserMessage.content.trim(),
+    );
+
     const stream = await openai.chat.completions.create(
       {
         model,
         stream: true,
         messages: [
-          { role: "system", content: buildSystemContent(documents ?? []) },
+          {
+            role: "system",
+            content: buildSystemContentFromRetrieval(retrievedChunks),
+          },
           ...history.map((message) => ({
             role: message.role,
             content: message.content.trim(),

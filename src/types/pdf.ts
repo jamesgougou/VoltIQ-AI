@@ -1,8 +1,11 @@
+import type { PdfPageText } from "@/types/rag";
+
 export type PdfParseResult = {
   fileName: string;
   fileSize: number;
   totalPages: number;
   text: string;
+  pages: PdfPageText[];
 };
 
 export type PdfDocument = PdfParseResult & {

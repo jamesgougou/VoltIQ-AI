@@ -38,12 +38,13 @@ export function PdfUploadManager({
 
     try {
       const { parsePdf } = await import("@/lib/pdf/parsePdf.client");
-      const { totalPages, text } = await parsePdf(file);
+      const { totalPages, text, pages } = await parsePdf(file);
       onAdd({
         fileName: file.name,
         fileSize: file.size,
         totalPages,
         text,
+        pages,
       });
     } catch (err) {
       const message =

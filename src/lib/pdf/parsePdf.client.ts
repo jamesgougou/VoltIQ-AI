@@ -4,6 +4,7 @@ import {
   MAX_PDF_SIZE_BYTES,
   getPdfSizeError,
 } from "@/lib/upload/limits";
+import type { PdfPageText } from "@/types/rag";
 
 function extractPageText(
   items: Array<{ str?: string } | { type: string }>,
@@ -16,7 +17,7 @@ function extractPageText(
 
 export async function parsePdf(
   file: File,
-): Promise<{ totalPages: number; text: string }> {
+): Promise<{ totalPages: number; text: string; pages: PdfPageText[] }> {
   if (typeof window === "undefined") {
     throw new Error("PDF parsing is only available in the browser.");
   }
@@ -46,7 +47,7 @@ export async function parsePdf(
   try {
     const pdf = await loadingTask.promise;
     const totalPages = pdf.numPages;
-    const pageTexts: string[] = [];
+    const pages: PdfPageText[] = [];
 
     for (let pageNumber = 1; pageNumber <= totalPages; pageNumber++) {
       const page = await pdf.getPage(pageNumber);
@@ -54,11 +55,11 @@ export async function parsePdf(
       const pageText = extractPageText(content.items);
 
       if (pageText) {
-        pageTexts.push(pageText);
+        pages.push({ pageNumber, text: pageText });
       }
     }
 
-    const text = pageTexts.join("\n\n").trim();
+    const text = pages.map((page) => page.text).join("\n\n").trim();
 
     if (!text) {
       throw new Error(
@@ -66,7 +67,7 @@ export async function parsePdf(
       );
     }
 
-    return { totalPages, text };
+    return { totalPages, text, pages };
   } catch (error) {
     if (error instanceof Error) {
       throw error;

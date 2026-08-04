@@ -98,7 +98,6 @@ export function ChatPanel({
             role: message.role,
             content: message.content,
           })),
-          documents,
           (chunk) => {
             streamedContent += chunk;
 

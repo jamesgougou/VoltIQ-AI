@@ -53,12 +53,13 @@ export function PDFUploader({
 
     try {
       const { parsePdf } = await import("@/lib/pdf/parsePdf.client");
-      const { totalPages, text } = await parsePdf(file);
+      const { totalPages, text, pages } = await parsePdf(file);
       onParsed({
         fileName: file.name,
         fileSize: file.size,
         totalPages,
         text,
+        pages,
       });
       setIsSuccess(true);
     } catch (err) {

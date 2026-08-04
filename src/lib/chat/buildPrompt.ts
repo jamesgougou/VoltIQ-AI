@@ -1,46 +1,39 @@
-import { DOCUMENT_CHAR_LIMIT } from "@/types/documentContext";
 import type { DocumentContextItem } from "@/types/documentContext";
+import type { RetrievedChunk } from "@/types/rag";
 import { VOLTIQ_SYSTEM_PROMPT } from "./systemPrompt";
 
 const SECTION_DIVIDER = "----------------------------------";
-const DOCUMENT_DIVIDER = "-------------------------";
 
 function getDocumentText(document: DocumentContextItem): string {
   return (document.ocrText ?? document.text).trim();
 }
 
-export function truncateDocumentText(text: string): string {
-  if (text.length <= DOCUMENT_CHAR_LIMIT) {
-    return text;
-  }
-
-  return `${text.slice(0, DOCUMENT_CHAR_LIMIT)}\n\n[Document truncated to first ${DOCUMENT_CHAR_LIMIT.toLocaleString()} characters]`;
-}
-
-export function buildDocumentsSection(documents: DocumentContextItem[]): string {
-  const usableDocuments = documents.filter((document) => getDocumentText(document));
-
-  if (usableDocuments.length === 0) {
+export function buildRetrievedContextSection(chunks: RetrievedChunk[]): string {
+  if (chunks.length === 0) {
     return "";
   }
 
-  const blocks = usableDocuments.map((document) => {
-    const content = truncateDocumentText(getDocumentText(document));
+  const blocks = chunks.map((chunk, index) => {
+    const sourceLabel = chunk.pageNumber
+      ? `${chunk.documentName}, Page ${chunk.pageNumber}`
+      : chunk.documentName;
 
-    return `Document:\n${document.name}\n\n${content}`;
+    return `Chunk ${index + 1}\n(Source: ${sourceLabel})\n\n${chunk.text}`;
   });
 
-  return `Uploaded Documents\n\n${blocks.join(`\n\n${DOCUMENT_DIVIDER}\n\n`)}`;
+  return `Retrieved Context\n\n${blocks.join("\n\n")}`;
 }
 
-export function buildSystemContent(documents: DocumentContextItem[]): string {
-  const documentsSection = buildDocumentsSection(documents);
+export function buildSystemContentFromRetrieval(
+  chunks: RetrievedChunk[],
+): string {
+  const retrievedSection = buildRetrievedContextSection(chunks);
 
-  if (!documentsSection) {
+  if (!retrievedSection) {
     return VOLTIQ_SYSTEM_PROMPT;
   }
 
-  return `${VOLTIQ_SYSTEM_PROMPT}\n\n${SECTION_DIVIDER}\n\n${documentsSection}`;
+  return `${VOLTIQ_SYSTEM_PROMPT}\n\n${SECTION_DIVIDER}\n\n${retrievedSection}`;
 }
 
 export function hasUsableDocumentContent(
