@@ -1,7 +1,8 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { DocumentIndexState, DocumentIndexStatus } from "@/lib/rag/types";
+import { calculateStageProgress, estimateSecondsRemaining } from "@/lib/rag/indexProgress";
 import { ragLog } from "@/lib/rag/logger";
+import type { DocumentIndexState, DocumentIndexStatus, IndexStage } from "@/lib/rag/types";
 
 const STORE_DIR = path.join(process.cwd(), ".voltiq");
 const STATUS_FILE = path.join(STORE_DIR, "index-status.json");
@@ -11,6 +12,12 @@ type StatusSnapshot = Record<string, DocumentIndexState>;
 function createEmptySnapshot(): StatusSnapshot {
   return {};
 }
+
+type ProgressUpdate = {
+  stage: IndexStage;
+  embeddedChunks?: number;
+  totalChunks?: number;
+};
 
 export class IndexStatusStore {
   private snapshot: StatusSnapshot | null = null;
@@ -43,33 +50,92 @@ export class IndexStatusStore {
     options?: {
       error?: string;
       chunkCount?: number;
+      stage?: IndexStage;
+      embeddedChunks?: number;
+      totalChunks?: number;
     },
   ): Promise<DocumentIndexState> {
     const snapshot = await this.loadSnapshot();
+    const previous = snapshot[documentId];
+    const stage =
+      options?.stage ??
+      (status === "ready"
+        ? "ready"
+        : status === "failed"
+          ? "failed"
+          : (previous?.stage ?? "uploading"));
+    const embeddedChunks = options?.embeddedChunks ?? previous?.embeddedChunks;
+    const totalChunks = options?.totalChunks ?? options?.chunkCount ?? previous?.totalChunks;
+    const progressPercent = calculateStageProgress(
+      stage,
+      embeddedChunks,
+      totalChunks,
+    );
+
     const nextState: DocumentIndexState = {
       documentId,
       filename,
       status,
+      stage,
       error: options?.error,
-      chunkCount: options?.chunkCount,
+      chunkCount: options?.chunkCount ?? previous?.chunkCount,
+      embeddedChunks,
+      totalChunks,
+      progressPercent,
+      startedAt:
+        status === "indexing"
+          ? (previous?.startedAt ?? new Date().toISOString())
+          : previous?.startedAt,
       updatedAt: new Date().toISOString(),
     };
+
+    nextState.estimatedSecondsRemaining =
+      estimateSecondsRemaining(nextState) ?? undefined;
 
     snapshot[documentId] = nextState;
     await this.persistSnapshot(snapshot);
 
-    console.info(
-      `[RAG] Status ${documentId} (${filename}): ${status}${
-        options?.error ? ` - ${options.error}` : ""
-      }`,
-    );
-
     ragLog(
       status === "ready" ? "ready" : status === "failed" ? "failed" : "upload",
-      `Status transition for ${filename}: ${status}${
-        options?.chunkCount ? ` (${options.chunkCount} chunks)` : ""
-      }${options?.error ? ` - ${options.error}` : ""}`,
+      `Status transition for ${filename}: ${status} (${stage}, ${progressPercent}%)`,
     );
+
+    return nextState;
+  }
+
+  async updateProgress(
+    documentId: string,
+    progress: ProgressUpdate,
+  ): Promise<DocumentIndexState | undefined> {
+    const snapshot = await this.loadSnapshot();
+    const current = snapshot[documentId];
+
+    if (!current || current.status !== "indexing") {
+      return current;
+    }
+
+    const embeddedChunks = progress.embeddedChunks ?? current.embeddedChunks;
+    const totalChunks = progress.totalChunks ?? current.totalChunks;
+    const progressPercent = calculateStageProgress(
+      progress.stage,
+      embeddedChunks,
+      totalChunks,
+    );
+
+    const nextState: DocumentIndexState = {
+      ...current,
+      stage: progress.stage,
+      embeddedChunks,
+      totalChunks,
+      progressPercent,
+      updatedAt: new Date().toISOString(),
+    };
+
+    nextState.estimatedSecondsRemaining =
+      estimateSecondsRemaining(nextState) ?? undefined;
+
+    snapshot[documentId] = nextState;
+    await this.persistSnapshot(snapshot);
 
     return nextState;
   }

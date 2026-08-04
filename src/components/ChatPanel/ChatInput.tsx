@@ -10,6 +10,8 @@ type ChatInputProps = {
   onPromptSelect: (prompt: string) => void;
   disabled?: boolean;
   inputDisabled?: boolean;
+  placeholder?: string;
+  helperText?: string;
   focusTrigger?: number;
 };
 
@@ -20,6 +22,8 @@ export function ChatInput({
   onPromptSelect,
   disabled = false,
   inputDisabled = false,
+  placeholder = "Ask anything...",
+  helperText = "Enter to send · Shift+Enter for new line",
   focusTrigger = 0,
 }: ChatInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -70,7 +74,7 @@ export function ChatInput({
               value={value}
               onChange={(event) => onChange(event.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="Ask anything..."
+              placeholder={placeholder}
               disabled={isLocked}
               rows={1}
               className="max-h-32 min-h-[48px] w-full resize-none rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 placeholder:text-slate-400 focus:border-violet-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-violet-100 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
@@ -102,7 +106,7 @@ export function ChatInput({
         </div>
       </div>
       <p className="mx-auto mt-2 max-w-3xl text-center text-xs text-slate-400">
-        Enter to send · Shift+Enter for new line
+        {helperText}
       </p>
       </div>
     </div>

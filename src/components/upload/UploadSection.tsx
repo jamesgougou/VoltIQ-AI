@@ -1,34 +1,27 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChatPanel } from "@/components/ChatPanel";
 import {
   clearRagIndex,
+  createClientIndexState,
   deleteDocumentFromRag,
   fetchDocumentIndexStatuses,
   hashDocumentContent,
   indexDocumentInRag,
   mergeIndexStates,
+  pollIndexProgress,
 } from "@/lib/rag/client";
+import { isAnyDocumentIndexing } from "@/lib/rag/indexProgress";
+import { DocumentIndexProgressCard } from "@/components/upload/DocumentIndexProgressCard";
 import { ImageUploadManager } from "@/components/upload/ImageUploadManager";
+import { IndexingToast } from "@/components/upload/IndexingToast";
 import { PdfUploadManager } from "@/components/upload/PdfUploadManager";
 import { TextPasteManager } from "@/components/upload/TextPasteManager";
 import type { DocumentContextItem } from "@/types/documentContext";
 import type { PdfDocument, PdfParseResult } from "@/types/pdf";
 import type { DocumentIndexState } from "@/types/rag";
 import { PASTED_TEXT_DOCUMENT_ID } from "@/types/rag";
-
-function createIndexingState(
-  documentId: string,
-  filename: string,
-): DocumentIndexState {
-  return {
-    documentId,
-    filename,
-    status: "indexing",
-    updatedAt: new Date().toISOString(),
-  };
-}
 
 export function UploadSection() {
   const [pdfs, setPdfs] = useState<PdfDocument[]>([]);
@@ -39,7 +32,10 @@ export function UploadSection() {
   const [indexStates, setIndexStates] = useState<
     Record<string, DocumentIndexState>
   >({});
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
   const indexedHashesRef = useRef<Map<string, string>>(new Map());
+  const indexingInFlightRef = useRef<Set<string>>(new Set());
+  const previousIndexStatesRef = useRef<Record<string, DocumentIndexState>>({});
 
   function updateIndexState(state: DocumentIndexState) {
     setIndexStates((current) => ({
@@ -68,11 +64,13 @@ export function UploadSection() {
     setHasText(false);
     setPastedText("");
     setIndexStates({});
+    setToastMessage(null);
     setResetKey((key) => key + 1);
 
     try {
       await clearRagIndex();
       indexedHashesRef.current.clear();
+      indexingInFlightRef.current.clear();
     } catch (error) {
       console.error("Failed to clear document index:", error);
     }
@@ -100,77 +98,139 @@ export function UploadSection() {
     return items;
   }, [pdfs, pastedText]);
 
-  async function indexDocumentEntry(
-    documentId: string,
-    documentName: string,
-    text: string,
-    pages?: PdfParseResult["pages"],
-  ) {
-    console.info(`[RAG:client] Starting indexing for ${documentName}.`);
-    updateIndexState(createIndexingState(documentId, documentName));
+  const textDocumentIds = useMemo(
+    () =>
+      documents
+        .filter((document) => document.text.trim().length > 0)
+        .map((document) => document.id),
+    [documents],
+  );
 
-    try {
-      const contentHash = await hashDocumentContent(text);
+  const isIndexing = isAnyDocumentIndexing(indexStates, textDocumentIds);
 
-      if (indexedHashesRef.current.get(documentId) === contentHash) {
-        const statuses = await fetchDocumentIndexStatuses([documentId]);
-        const existing = statuses[0];
-
-        if (existing?.status === "ready") {
-          updateIndexState(existing);
-          return;
-        }
-      }
-
-      const result = await indexDocumentInRag({
-        documentId,
-        documentName,
-        text,
-        pages,
-        contentHash,
-      });
-
-      updateIndexState({
-        documentId,
-        filename: documentName,
-        status: result.status,
-        chunkCount: result.chunkCount,
-        error: result.error,
-        updatedAt: new Date().toISOString(),
-      });
-
-      if (result.status === "ready") {
-        indexedHashesRef.current.set(documentId, contentHash);
-      } else {
-        indexedHashesRef.current.delete(documentId);
-      }
-    } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : "Unable to generate embeddings for this document.";
-
-      indexedHashesRef.current.delete(documentId);
-
-      const [serverStatus] = await fetchDocumentIndexStatuses([documentId]);
-
-      if (serverStatus?.status === "ready") {
-        updateIndexState(serverStatus);
-        indexedHashesRef.current.set(documentId, await hashDocumentContent(text));
+  const indexDocumentEntry = useCallback(
+    async (
+      documentId: string,
+      documentName: string,
+      text: string,
+      pages?: PdfParseResult["pages"],
+    ) => {
+      if (indexingInFlightRef.current.has(documentId)) {
         return;
       }
 
-      updateIndexState({
-        documentId,
-        filename: documentName,
-        status: "failed",
-        error: serverStatus?.error ?? message,
-        updatedAt: new Date().toISOString(),
-      });
+      indexingInFlightRef.current.add(documentId);
+      const pollController = new AbortController();
 
-      console.error(`[RAG:client] Failed to index ${documentName}:`, error);
-    }
-  }
+      updateIndexState(
+        createClientIndexState(documentId, documentName, "uploading"),
+      );
+
+      const pollPromise = pollIndexProgress(
+        documentId,
+        updateIndexState,
+        pollController.signal,
+      );
+
+      try {
+        const contentHash = await hashDocumentContent(text);
+
+        if (indexedHashesRef.current.get(documentId) === contentHash) {
+          const statuses = await fetchDocumentIndexStatuses([documentId]);
+          const existing = statuses[0];
+
+          if (existing?.status === "ready") {
+            updateIndexState(existing);
+            return;
+          }
+        }
+
+        const result = await indexDocumentInRag({
+          documentId,
+          documentName,
+          text,
+          pages,
+          contentHash,
+        });
+
+        updateIndexState({
+          documentId,
+          filename: documentName,
+          status: result.status,
+          stage: result.status === "ready" ? "ready" : "failed",
+          chunkCount: result.chunkCount,
+          totalChunks: result.chunkCount,
+          embeddedChunks: result.chunkCount,
+          progressPercent: result.status === "ready" ? 100 : 0,
+          error: result.error,
+          updatedAt: new Date().toISOString(),
+        });
+
+        if (result.status === "ready") {
+          indexedHashesRef.current.set(documentId, contentHash);
+        } else {
+          indexedHashesRef.current.delete(documentId);
+        }
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Unable to generate embeddings for this document.";
+
+        indexedHashesRef.current.delete(documentId);
+
+        const [serverStatus] = await fetchDocumentIndexStatuses([documentId]);
+
+        if (serverStatus?.status === "ready") {
+          updateIndexState(serverStatus);
+          indexedHashesRef.current.set(
+            documentId,
+            await hashDocumentContent(text),
+          );
+          return;
+        }
+
+        updateIndexState({
+          documentId,
+          filename: documentName,
+          status: "failed",
+          stage: "failed",
+          progressPercent: 0,
+          error: serverStatus?.error ?? message,
+          updatedAt: new Date().toISOString(),
+        });
+
+        console.error(`[RAG:client] Failed to index ${documentName}:`, error);
+      } finally {
+        pollController.abort();
+        await pollPromise;
+        indexingInFlightRef.current.delete(documentId);
+      }
+    },
+    [],
+  );
+
+  const retryDocument = useCallback(
+    (documentId: string) => {
+      indexedHashesRef.current.delete(documentId);
+
+      const pdf = pdfs.find((item) => item.id === documentId);
+
+      if (pdf) {
+        void indexDocumentEntry(pdf.id, pdf.fileName, pdf.text, pdf.pages);
+        return;
+      }
+
+      if (documentId === PASTED_TEXT_DOCUMENT_ID && pastedText.trim()) {
+        void indexDocumentEntry(
+          PASTED_TEXT_DOCUMENT_ID,
+          "Pasted Text",
+          pastedText,
+        );
+      }
+    },
+    [indexDocumentEntry, pdfs, pastedText],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -213,6 +273,10 @@ export function UploadSection() {
           }
         }
 
+        if (indexingInFlightRef.current.has(pdf.id)) {
+          continue;
+        }
+
         await indexDocumentEntry(
           pdf.id,
           pdf.fileName,
@@ -227,7 +291,7 @@ export function UploadSection() {
     return () => {
       cancelled = true;
     };
-  }, [pdfs]);
+  }, [pdfs, indexDocumentEntry]);
 
   useEffect(() => {
     let cancelled = false;
@@ -254,6 +318,10 @@ export function UploadSection() {
         return;
       }
 
+      if (indexingInFlightRef.current.has(PASTED_TEXT_DOCUMENT_ID)) {
+        return;
+      }
+
       await indexDocumentEntry(
         PASTED_TEXT_DOCUMENT_ID,
         "Pasted Text",
@@ -265,19 +333,18 @@ export function UploadSection() {
       cancelled = true;
       window.clearTimeout(timeoutId);
     };
-  }, [pastedText]);
+  }, [pastedText, indexDocumentEntry]);
 
   useEffect(() => {
-    if (documents.length === 0) {
+    if (textDocumentIds.length === 0) {
       return;
     }
 
     let cancelled = false;
+    const pollInterval = isIndexing ? 500 : 2000;
 
     async function pollStatuses() {
-      const statuses = await fetchDocumentIndexStatuses(
-        documents.map((document) => document.id),
-      );
+      const statuses = await fetchDocumentIndexStatuses(textDocumentIds);
 
       if (cancelled || statuses.length === 0) {
         return;
@@ -306,13 +373,27 @@ export function UploadSection() {
     void pollStatuses();
     const intervalId = window.setInterval(() => {
       void pollStatuses();
-    }, 2000);
+    }, pollInterval);
 
     return () => {
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [documents]);
+  }, [documents, textDocumentIds, isIndexing]);
+
+  useEffect(() => {
+    for (const [documentId, state] of Object.entries(indexStates)) {
+      const previous = previousIndexStatesRef.current[documentId];
+
+      if (previous?.status === "indexing" && state.status === "ready") {
+        setToastMessage(
+          `✅ ${state.filename} indexed successfully. Ready for AI search.`,
+        );
+      }
+    }
+
+    previousIndexStatesRef.current = indexStates;
+  }, [indexStates]);
 
   return (
     <section className="flex flex-col gap-6">
@@ -320,6 +401,7 @@ export function UploadSection() {
         hasDocuments={hasDocuments}
         documents={documents}
         indexStates={indexStates}
+        indexingInProgress={isIndexing}
       />
 
       <section
@@ -351,20 +433,37 @@ export function UploadSection() {
           <PdfUploadManager
             key={`pdf-${resetKey}`}
             pdfs={pdfs}
+            indexStates={indexStates}
             onAdd={handlePdfAdd}
             onRemove={handlePdfRemove}
+            onRetry={retryDocument}
           />
           <ImageUploadManager
             key={`images-${resetKey}`}
             onHasContentChange={setHasImages}
           />
-          <TextPasteManager
-            key={`text-${resetKey}`}
-            onHasContentChange={setHasText}
-            onTextChange={setPastedText}
-          />
+          <div className="space-y-3">
+            <TextPasteManager
+              key={`text-${resetKey}`}
+              onHasContentChange={setHasText}
+              onTextChange={setPastedText}
+            />
+            {pastedText.trim() && indexStates[PASTED_TEXT_DOCUMENT_ID] && (
+              <DocumentIndexProgressCard
+                filename="Pasted Text"
+                state={indexStates[PASTED_TEXT_DOCUMENT_ID]}
+                onRetry={() => retryDocument(PASTED_TEXT_DOCUMENT_ID)}
+                compact
+              />
+            )}
+          </div>
         </div>
       </section>
+
+      <IndexingToast
+        message={toastMessage}
+        onDismiss={() => setToastMessage(null)}
+      />
     </section>
   );
 }

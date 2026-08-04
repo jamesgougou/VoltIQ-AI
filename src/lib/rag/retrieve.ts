@@ -55,6 +55,9 @@ async function reconcileDocumentStatus(
     if (!status || status.status !== "ready") {
       status = await statusStore.setStatus(documentId, record.filename, "ready", {
         chunkCount: storedChunkCount,
+        stage: "ready",
+        totalChunks: storedChunkCount,
+        embeddedChunks: storedChunkCount,
       });
       ragLog(
         "ready",
@@ -128,6 +131,8 @@ export async function indexDocument(
 
     await statusStore.setStatus(documentId, documentName, "ready", {
       chunkCount: storedChunkCount,
+      stage: "ready",
+      totalChunks: storedChunkCount,
     });
 
     ragLog(
@@ -143,9 +148,12 @@ export async function indexDocument(
     };
   }
 
-  await statusStore.setStatus(documentId, documentName, "indexing");
+  await statusStore.setStatus(documentId, documentName, "indexing", {
+    stage: "extracting",
+  });
 
   try {
+    await statusStore.updateProgress(documentId, { stage: "chunking" });
     ragLog("chunk", `Chunking document: ${documentName}`);
 
     const chunks = chunkDocument({
@@ -172,7 +180,10 @@ export async function indexDocument(
       const error =
         "No extractable text found in this document. Upload a text-based PDF or paste the content directly.";
 
-      await statusStore.setStatus(documentId, documentName, "failed", { error });
+      await statusStore.setStatus(documentId, documentName, "failed", {
+        error,
+        stage: "failed",
+      });
       ragError("failed", `Indexing failed for ${documentName}: ${error}`);
 
       return {
@@ -184,10 +195,18 @@ export async function indexDocument(
       };
     }
 
+    await statusStore.updateProgress(documentId, {
+      stage: "embedding",
+      embeddedChunks: 0,
+      totalChunks: chunks.length,
+    });
+
     ragLog(
       "embed",
       `Generating embeddings for ${documentName}: ${chunks.length} chunks.`,
     );
+
+    let lastProgressWrite = 0;
 
     const embeddings = await embedTextsInBatches(
       chunks.map((chunk) => chunk.text),
@@ -196,6 +215,21 @@ export async function indexDocument(
           "embed",
           `Generating embeddings: chunk ${completed}/${total} for ${documentName}`,
         );
+
+        const now = Date.now();
+
+        if (
+          completed === total ||
+          completed % 5 === 0 ||
+          now - lastProgressWrite >= 500
+        ) {
+          lastProgressWrite = now;
+          void statusStore.updateProgress(documentId, {
+            stage: "embedding",
+            embeddedChunks: completed,
+            totalChunks: total,
+          });
+        }
       },
     );
 
@@ -217,6 +251,12 @@ export async function indexDocument(
       embedding: embeddings[index],
     }));
 
+    await statusStore.updateProgress(documentId, {
+      stage: "saving",
+      embeddedChunks: chunks.length,
+      totalChunks: chunks.length,
+    });
+
     ragLog(
       "store",
       `Saving embeddings for ${documentName}: ${storedChunks.length} chunks.`,
@@ -233,6 +273,9 @@ export async function indexDocument(
 
     await statusStore.setStatus(documentId, documentName, "ready", {
       chunkCount: storedChunks.length,
+      stage: "ready",
+      totalChunks: storedChunks.length,
+      embeddedChunks: storedChunks.length,
     });
 
     ragLog(
@@ -254,6 +297,7 @@ export async function indexDocument(
     await vectorStore.deleteDocument(documentId);
     await statusStore.setStatus(documentId, documentName, "failed", {
       error: message,
+      stage: "failed",
     });
 
     throw new RetrievalError(message);

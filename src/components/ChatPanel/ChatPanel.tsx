@@ -16,6 +16,7 @@ type ChatPanelProps = {
   hasDocuments?: boolean;
   documents?: DocumentContextItem[];
   indexStates?: Record<string, DocumentIndexState>;
+  indexingInProgress?: boolean;
 };
 
 function createMessage(
@@ -37,6 +38,7 @@ export function ChatPanel({
   hasDocuments = false,
   documents = [],
   indexStates = {},
+  indexingInProgress = false,
 }: ChatPanelProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -75,7 +77,7 @@ export function ChatPanel({
   const sendMessage = useCallback(
     async (messageOverride?: string) => {
       const trimmed = (messageOverride ?? input).trim();
-      if (!trimmed || isLoading || !hasDocuments) return;
+      if (!trimmed || isLoading || !hasDocuments || indexingInProgress) return;
 
       const userMessage = createMessage("user", trimmed);
       const nextMessages = [...messages, userMessage];
@@ -204,7 +206,7 @@ export function ChatPanel({
         setIsLoading(false);
       }
     },
-    [input, isLoading, hasDocuments, messages, documents, indexStates],
+    [input, isLoading, hasDocuments, messages, documents, indexStates, indexingInProgress],
   );
 
   function handlePromptSelect(prompt: string) {
@@ -270,7 +272,17 @@ export function ChatPanel({
           onSend={() => void sendMessage()}
           onPromptSelect={handlePromptSelect}
           disabled={isLoading}
-          inputDisabled={!hasDocuments}
+          inputDisabled={!hasDocuments || indexingInProgress}
+          placeholder={
+            indexingInProgress
+              ? "Document indexing in progress..."
+              : "Ask anything..."
+          }
+          helperText={
+            indexingInProgress
+              ? "Document indexing in progress..."
+              : "Enter to send · Shift+Enter for new line"
+          }
           focusTrigger={focusTrigger}
         />
       </div>

@@ -4,6 +4,7 @@ export type {
   DocumentIndexStatus,
   IndexDocumentRequest,
   IndexDocumentResult,
+  IndexStage,
   PdfPageText,
   RetrievedChunk,
   RetrievedSourceMetadata,

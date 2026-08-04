@@ -1,9 +1,24 @@
 export type DocumentIndexStatus = "indexing" | "ready" | "failed";
 
+export type IndexStage =
+  | "uploading"
+  | "extracting"
+  | "chunking"
+  | "embedding"
+  | "saving"
+  | "ready"
+  | "failed";
+
 export type DocumentIndexState = {
   documentId: string;
   filename: string;
   status: DocumentIndexStatus;
+  stage?: IndexStage;
+  progressPercent?: number;
+  embeddedChunks?: number;
+  totalChunks?: number;
+  estimatedSecondsRemaining?: number;
+  startedAt?: string;
   error?: string;
   chunkCount?: number;
   updatedAt: string;

@@ -1,12 +1,14 @@
+import { calculateStageProgress } from "@/lib/rag/indexProgress";
 import type {
   DocumentIndexState,
   IndexDocumentRequest,
   IndexDocumentResult,
+  IndexStage,
   PdfPageText,
 } from "@/types/rag";
 
 const INDEX_REQUEST_TIMEOUT_MS = 5 * 60 * 1000;
-const STATUS_POLL_INTERVAL_MS = 2_000;
+const STATUS_POLL_INTERVAL_MS = 500;
 
 export function buildIndexRequest(input: {
   documentId: string;
@@ -37,6 +39,58 @@ export async function hashDocumentContent(content: string): Promise<string> {
   }
 
   return `${content.length}:${content.slice(0, 128)}`;
+}
+
+export function createClientIndexState(
+  documentId: string,
+  filename: string,
+  stage: IndexStage,
+  options?: {
+    embeddedChunks?: number;
+    totalChunks?: number;
+  },
+): DocumentIndexState {
+  const progressPercent = calculateStageProgress(
+    stage,
+    options?.embeddedChunks,
+    options?.totalChunks,
+  );
+
+  return {
+    documentId,
+    filename,
+    status: "indexing",
+    stage,
+    progressPercent,
+    embeddedChunks: options?.embeddedChunks,
+    totalChunks: options?.totalChunks,
+    startedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+export async function pollIndexProgress(
+  documentId: string,
+  onUpdate: (state: DocumentIndexState) => void,
+  signal?: AbortSignal,
+): Promise<DocumentIndexState | undefined> {
+  while (!signal?.aborted) {
+    const [status] = await fetchDocumentIndexStatuses([documentId]);
+
+    if (status) {
+      onUpdate(status);
+
+      if (status.status === "ready" || status.status === "failed") {
+        return status;
+      }
+    }
+
+    await new Promise((resolve) => {
+      window.setTimeout(resolve, STATUS_POLL_INTERVAL_MS);
+    });
+  }
+
+  return undefined;
 }
 
 export async function indexDocumentInRag(
