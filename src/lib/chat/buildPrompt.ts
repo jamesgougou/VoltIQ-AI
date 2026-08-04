@@ -1,11 +1,57 @@
-import type { DocumentContextItem } from "@/types/documentContext";
+import type {
+  DocumentContextItem,
+  UploadedDocument,
+} from "@/types/documentContext";
+import { DOCUMENT_CHAR_LIMIT } from "@/types/documentContext";
 import type { RetrievedChunk } from "@/types/rag";
 import { VOLTIQ_SYSTEM_PROMPT } from "./systemPrompt";
 
 const SECTION_DIVIDER = "----------------------------------";
+const DOCUMENT_DIVIDER = "-------------------------";
 
-function getDocumentText(document: DocumentContextItem): string {
-  return (document.ocrText ?? document.text).trim();
+function getDocumentText(document: DocumentContextItem | UploadedDocument): string {
+  const ocrText = "ocrText" in document ? document.ocrText : undefined;
+  return (ocrText ?? document.text).trim();
+}
+
+export function truncateDocumentText(text: string): string {
+  if (text.length <= DOCUMENT_CHAR_LIMIT) {
+    return text;
+  }
+
+  return `${text.slice(0, DOCUMENT_CHAR_LIMIT)}\n\n[Document truncated to first ${DOCUMENT_CHAR_LIMIT.toLocaleString()} characters]`;
+}
+
+export function buildUploadedDocumentsSection(
+  uploadedDocuments: UploadedDocument[],
+): string {
+  const usableDocuments = uploadedDocuments.filter(
+    (document) => getDocumentText(document).length > 0,
+  );
+
+  if (usableDocuments.length === 0) {
+    return "";
+  }
+
+  const blocks = usableDocuments.map((document) => {
+    const content = truncateDocumentText(getDocumentText(document));
+
+    return `Document:\n${document.fileName}\n\n${content}`;
+  });
+
+  return `Uploaded Documents\n\n${blocks.join(`\n\n${DOCUMENT_DIVIDER}\n\n`)}`;
+}
+
+export function buildSystemContentWithUploadedDocuments(
+  uploadedDocuments: UploadedDocument[],
+): string {
+  const documentsSection = buildUploadedDocumentsSection(uploadedDocuments);
+
+  if (!documentsSection) {
+    return VOLTIQ_SYSTEM_PROMPT;
+  }
+
+  return `${VOLTIQ_SYSTEM_PROMPT}\n\n${SECTION_DIVIDER}\n\n${documentsSection}`;
 }
 
 export function buildRetrievedContextSection(chunks: RetrievedChunk[]): string {
@@ -34,6 +80,17 @@ export function buildSystemContentFromRetrieval(
   }
 
   return `${VOLTIQ_SYSTEM_PROMPT}\n\n${SECTION_DIVIDER}\n\n${retrievedSection}`;
+}
+
+export function buildSystemContent(
+  uploadedDocuments: UploadedDocument[],
+  retrievedChunks: RetrievedChunk[] = [],
+): string {
+  if (uploadedDocuments.length > 0) {
+    return buildSystemContentWithUploadedDocuments(uploadedDocuments);
+  }
+
+  return buildSystemContentFromRetrieval(retrievedChunks);
 }
 
 export function hasUsableDocumentContent(

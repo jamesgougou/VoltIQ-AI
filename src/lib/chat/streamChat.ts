@@ -1,3 +1,5 @@
+import type { UploadedDocument } from "@/types/documentContext";
+
 export type ChatApiMessage = {
   role: "user" | "assistant";
   content: string;
@@ -14,6 +16,7 @@ export class ChatStreamError extends Error {
 
 export async function streamChatResponse(
   messages: ChatApiMessage[],
+  uploadedDocuments: UploadedDocument[],
   onChunk: (chunk: string) => void,
   signal?: AbortSignal,
 ): Promise<void> {
@@ -29,7 +32,7 @@ export async function streamChatResponse(
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ messages }),
+      body: JSON.stringify({ messages, uploadedDocuments }),
       signal: controller.signal,
     });
 

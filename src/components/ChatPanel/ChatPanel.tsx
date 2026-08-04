@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { getDocumentExtractionError } from "@/lib/chat/buildPrompt";
 import { streamChatResponse } from "@/lib/chat/streamChat";
 import type { ChatMessage } from "@/types/chat";
+import { toUploadedDocuments } from "@/types/documentContext";
 import type { DocumentContextItem } from "@/types/documentContext";
 import { StudyPanel } from "@/components/Study";
 import { AIToolsPanel } from "./AIToolsPanel";
@@ -91,6 +92,7 @@ export function ChatPanel({
 
       let streamedContent = "";
       let hasStreamStarted = false;
+      const uploadedDocuments = toUploadedDocuments(documents);
 
       try {
         await streamChatResponse(
@@ -98,6 +100,7 @@ export function ChatPanel({
             role: message.role,
             content: message.content,
           })),
+          uploadedDocuments,
           (chunk) => {
             streamedContent += chunk;
 

@@ -1,7 +1,11 @@
 import OpenAI from "openai";
-import { buildSystemContentFromRetrieval } from "@/lib/chat/buildPrompt";
+import {
+  buildSystemContent,
+  getDocumentExtractionError,
+} from "@/lib/chat/buildPrompt";
 import { getOpenAIClient, getOpenAIModel } from "@/lib/openai";
 import { retrieveRelevantChunks } from "@/lib/rag/retriever";
+import type { UploadedDocument } from "@/types/documentContext";
 
 export const runtime = "nodejs";
 
@@ -14,7 +18,30 @@ type ChatRequestMessage = {
 
 type ChatRequestBody = {
   messages?: ChatRequestMessage[];
+  uploadedDocuments?: UploadedDocument[];
 };
+
+function normalizeUploadedDocuments(
+  uploadedDocuments: UploadedDocument[] | undefined,
+): UploadedDocument[] {
+  return (
+    uploadedDocuments?.filter((document) => {
+      const content = (document.ocrText ?? document.text)?.trim();
+      return (
+        typeof document.fileName === "string" &&
+        document.fileName.trim().length > 0 &&
+        typeof content === "string" &&
+        content.length > 0
+      );
+    }) ?? []
+  ).map((document) => ({
+    fileName: document.fileName.trim(),
+    text: (document.ocrText ?? document.text).trim(),
+    totalPages: document.totalPages,
+    fileSize: document.fileSize,
+    ocrText: document.ocrText?.trim(),
+  }));
+}
 
 function errorResponse(message: string, status: number) {
   return Response.json({ error: message }, { status });
@@ -109,6 +136,23 @@ export async function POST(request: Request) {
     return errorResponse("A user message is required.", 400);
   }
 
+  const uploadedDocuments = normalizeUploadedDocuments(body.uploadedDocuments);
+
+  const extractionError = getDocumentExtractionError(
+    uploadedDocuments.map((document) => ({
+      id: document.fileName,
+      name: document.fileName,
+      text: document.text,
+      ocrText: document.ocrText,
+      totalPages: document.totalPages,
+      fileSize: document.fileSize,
+    })),
+  );
+
+  if (extractionError && uploadedDocuments.length > 0) {
+    return errorResponse(extractionError, 422);
+  }
+
   const apiKey = process.env.OPENAI_API_KEY?.trim();
 
   if (!apiKey) {
@@ -128,9 +172,10 @@ export async function POST(request: Request) {
     const abortController = new AbortController();
     const timeoutId = setTimeout(() => abortController.abort(), REQUEST_TIMEOUT_MS);
 
-    const retrievedChunks = await retrieveRelevantChunks(
-      latestUserMessage.content.trim(),
-    );
+    const retrievedChunks =
+      uploadedDocuments.length === 0
+        ? await retrieveRelevantChunks(latestUserMessage.content.trim())
+        : [];
 
     const stream = await openai.chat.completions.create(
       {
@@ -139,7 +184,7 @@ export async function POST(request: Request) {
         messages: [
           {
             role: "system",
-            content: buildSystemContentFromRetrieval(retrievedChunks),
+            content: buildSystemContent(uploadedDocuments, retrievedChunks),
           },
           ...history.map((message) => ({
             role: message.role,

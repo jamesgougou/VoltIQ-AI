@@ -59,6 +59,8 @@ export function UploadSection() {
       id: pdf.id,
       name: pdf.fileName,
       text: pdf.text,
+      totalPages: pdf.totalPages,
+      fileSize: pdf.fileSize,
     }));
 
     if (pastedText.trim()) {
