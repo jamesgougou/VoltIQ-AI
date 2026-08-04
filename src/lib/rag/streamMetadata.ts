@@ -30,9 +30,26 @@ export function parseSourcesTrailer(content: string): {
   }
 
   try {
-    const sources = JSON.parse(
+    const parsed = JSON.parse(
       content.slice(jsonStart, endIndex),
     ) as RetrievedSourceMetadata[];
+
+    const sources = parsed
+      .filter((source) => source && typeof source === "object")
+      .map((source) => ({
+        filename: typeof source.filename === "string" ? source.filename : "",
+        documentId:
+          typeof source.documentId === "string" ? source.documentId : "",
+        page: typeof source.page === "number" ? source.page : undefined,
+        chunkIndex:
+          typeof source.chunkIndex === "number" ? source.chunkIndex : 0,
+        similarityScore:
+          typeof source.similarityScore === "number"
+            ? source.similarityScore
+            : 0,
+        chunkId: typeof source.chunkId === "string" ? source.chunkId : "",
+        excerpt: typeof source.excerpt === "string" ? source.excerpt : "",
+      }));
 
     return {
       content: content.slice(0, markerIndex),

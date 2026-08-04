@@ -64,3 +64,8 @@ body {
 .citation-inline-ref {
   white-space: normal;
 }
+
+.citation-highlight {
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}

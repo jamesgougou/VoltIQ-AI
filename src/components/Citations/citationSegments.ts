@@ -4,6 +4,71 @@ export type CitationSegment =
   | { type: "markdown"; text: string }
   | { type: "inline"; label: string; citation: IndexedCitation };
 
+type MatchCandidate = {
+  citation: IndexedCitation;
+  position: number;
+  length: number;
+};
+
+function findMatch(
+  content: string,
+  label: string,
+): { position: number; length: number } | null {
+  const normalizedContent = content.toLowerCase();
+  const normalizedLabel = label.toLowerCase().trim();
+
+  if (!normalizedLabel) {
+    return null;
+  }
+
+  const position = normalizedContent.indexOf(normalizedLabel);
+
+  if (position === -1) {
+    return null;
+  }
+
+  return {
+    position,
+    length: label.length,
+  };
+}
+
+function buildMatchCandidates(
+  content: string,
+  citations: IndexedCitation[],
+): MatchCandidate[] {
+  const matches: MatchCandidate[] = [];
+
+  for (const citation of citations) {
+    if (citation.unavailable || !citation.inlineLabel.trim()) {
+      continue;
+    }
+
+    const labels = [citation.inlineLabel];
+
+    if (citation.clause) {
+      labels.push(`Clause ${citation.clause}`);
+    }
+
+    for (const label of labels) {
+      const match = findMatch(content, label);
+
+      if (!match) {
+        continue;
+      }
+
+      matches.push({
+        citation,
+        position: match.position,
+        length: label.length,
+      });
+      break;
+    }
+  }
+
+  return matches.sort((left, right) => left.position - right.position);
+}
+
 export function buildCitationSegments(
   content: string,
   citations: IndexedCitation[],
@@ -12,32 +77,7 @@ export function buildCitationSegments(
     return [{ type: "markdown", text: content }];
   }
 
-  const matches = citations
-    .map((citation) => {
-      const position = content
-        .toLowerCase()
-        .indexOf(citation.inlineLabel.toLowerCase());
-
-      if (position === -1) {
-        return null;
-      }
-
-      return {
-        citation,
-        position,
-        length: citation.inlineLabel.length,
-      };
-    })
-    .filter(
-      (
-        match,
-      ): match is {
-        citation: IndexedCitation;
-        position: number;
-        length: number;
-      } => match !== null,
-    )
-    .sort((a, b) => a.position - b.position);
+  const matches = buildMatchCandidates(content, citations);
 
   if (matches.length === 0) {
     return [{ type: "markdown", text: content }];

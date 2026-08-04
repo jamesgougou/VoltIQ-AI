@@ -38,7 +38,10 @@ export type RetrievedSourceMetadata = {
   chunkIndex: number;
   similarityScore: number;
   chunkId: string;
+  excerpt: string;
 };
+
+export const MAX_CITATION_SOURCES = 5;
 
 export type IndexDocumentRequest = {
   documentId: string;
@@ -68,12 +71,13 @@ export const EMBED_BATCH_SIZE = 20;
 export function toSourceMetadata(
   chunks: RetrievedChunk[],
 ): RetrievedSourceMetadata[] {
-  return chunks.map((chunk) => ({
+  return chunks.slice(0, MAX_CITATION_SOURCES).map((chunk) => ({
     filename: chunk.filename,
     documentId: chunk.documentId,
     page: chunk.page,
     chunkIndex: chunk.chunkIndex,
     similarityScore: chunk.similarityScore,
     chunkId: chunk.id,
+    excerpt: chunk.text,
   }));
 }

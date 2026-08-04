@@ -4,11 +4,14 @@ export type Citation = {
   id: string;
   document: string;
   fileName: string;
-  page: number;
+  page?: number;
   clause?: string;
+  chunkIndex: number;
+  similarityScore: number;
   confidence: CitationConfidence;
   excerpt: string;
   inlineLabel: string;
+  unavailable?: boolean;
 };
 
 export type IndexedCitation = Citation & {

@@ -1,7 +1,8 @@
 "use client";
 
 import { useMemo } from "react";
-import { getMockCitationsForContent } from "@/lib/citations/mockCitations";
+import { citationsFromSources } from "@/lib/citations/fromSources";
+import type { RetrievedSourceMetadata } from "@/lib/rag/types";
 import type { IndexedCitation } from "@/types/citation";
 import { MarkdownContent } from "@/components/ChatPanel/MarkdownContent";
 import { CitationBadge } from "./CitationBadge";
@@ -11,11 +12,24 @@ import { buildCitationSegments } from "./citationSegments";
 type AssistantAnswerProps = {
   content: string;
   messageId: string;
+  sources?: RetrievedSourceMetadata[];
 };
 
 function scrollToCitation(messageId: string, citationId: string) {
   const element = document.getElementById(`citation-${messageId}-${citationId}`);
-  element?.scrollIntoView({ behavior: "smooth", block: "center" });
+
+  if (!element) {
+    return;
+  }
+
+  element.scrollIntoView({ behavior: "smooth", block: "center" });
+
+  if (!element.classList.contains("ring-2")) {
+    element.classList.add("ring-2", "ring-violet-300");
+    window.setTimeout(() => {
+      element.classList.remove("ring-2", "ring-violet-300");
+    }, 1200);
+  }
 }
 
 function InlineReferences({
@@ -30,13 +44,11 @@ function InlineReferences({
   }
 
   return (
-    <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-slate-100 pt-3">
-      <span className="text-[11px] font-medium text-slate-400">Referenced</span>
+    <div className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1.5 border-t border-slate-100 pt-3">
       {citations.map((citation) => (
         <CitationBadge
           key={citation.id}
           index={citation.index}
-          label={citation.inlineLabel}
           onClick={() => scrollToCitation(messageId, citation.id)}
         />
       ))}
@@ -44,27 +56,31 @@ function InlineReferences({
   );
 }
 
-export function AssistantAnswer({ content, messageId }: AssistantAnswerProps) {
-  const citations = useMemo(
-    () => getMockCitationsForContent(content),
-    [content],
-  );
+export function AssistantAnswer({
+  content,
+  messageId,
+  sources,
+}: AssistantAnswerProps) {
+  const indexedCitations = useMemo<IndexedCitation[]>(() => {
+    const citations = citationsFromSources(sources);
 
-  const indexedCitations = useMemo<IndexedCitation[]>(
-    () => citations.map((citation, index) => ({ ...citation, index: index + 1 })),
-    [citations],
-  );
+    return citations.map((citation, index) => ({
+      ...citation,
+      index: index + 1,
+    }));
+  }, [sources]);
 
   const segments = useMemo(
     () => buildCitationSegments(content, indexedCitations),
     [content, indexedCitations],
   );
 
-  if (indexedCitations.length === 0) {
+  const hasCitations = indexedCitations.length > 0;
+  const hasInlineSegments = segments.some((segment) => segment.type === "inline");
+
+  if (!hasCitations) {
     return <MarkdownContent content={content} />;
   }
-
-  const hasInlineSegments = segments.some((segment) => segment.type === "inline");
 
   return (
     <div>
@@ -87,15 +103,13 @@ export function AssistantAnswer({ content, messageId }: AssistantAnswerProps) {
 
             return (
               <span
-                key={`inline-${segment.citation.id}`}
+                key={`inline-${segment.citation.id}-${index}`}
                 className="inline citation-inline-ref text-sm leading-relaxed text-slate-800"
               >
                 {segment.label}
                 <CitationBadge
                   index={segment.citation.index}
-                  onClick={() =>
-                    scrollToCitation(messageId, segment.citation.id)
-                  }
+                  onClick={() => scrollToCitation(messageId, segment.citation.id)}
                 />
               </span>
             );
@@ -104,10 +118,7 @@ export function AssistantAnswer({ content, messageId }: AssistantAnswerProps) {
       ) : (
         <>
           <MarkdownContent content={content} />
-          <InlineReferences
-            citations={indexedCitations}
-            messageId={messageId}
-          />
+          <InlineReferences citations={indexedCitations} messageId={messageId} />
         </>
       )}
 

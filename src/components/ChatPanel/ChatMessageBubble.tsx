@@ -2,6 +2,7 @@
 
 import { AssistantAnswer } from "@/components/Citations";
 import { formatMessageTime } from "@/lib/format";
+import type { RetrievedSourceMetadata } from "@/lib/rag/types";
 import { CopyButton } from "./CopyButton";
 
 type ChatMessageBubbleProps = {
@@ -9,6 +10,7 @@ type ChatMessageBubbleProps = {
   role: "user" | "assistant";
   content: string;
   createdAt: Date;
+  sources?: RetrievedSourceMetadata[];
 };
 
 export function ChatMessageBubble({
@@ -16,6 +18,7 @@ export function ChatMessageBubble({
   role,
   content,
   createdAt,
+  sources,
 }: ChatMessageBubbleProps) {
   const isUser = role === "user";
   const timestamp = formatMessageTime(createdAt);
@@ -68,7 +71,11 @@ export function ChatMessageBubble({
             {isUser ? (
               content
             ) : (
-              <AssistantAnswer content={content} messageId={id} />
+              <AssistantAnswer
+                content={content}
+                messageId={id}
+                sources={sources}
+              />
             )}
           </div>
 
