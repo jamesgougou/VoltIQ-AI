@@ -1,9 +1,10 @@
 import { chunkDocument } from "@/lib/rag/chunk";
 import {
-  embedQuery,
   embedTextsInBatches,
   formatEmbeddingError,
 } from "@/lib/rag/embed";
+import { clearEmbeddingCache } from "@/lib/rag/embeddingCache";
+import { hybridRetrieve, type HybridRetrievalResult } from "@/lib/rag/hybridSearch";
 import { getIndexStatusStore } from "@/lib/rag/indexStatus";
 import { ragDebug, ragError, ragLog } from "@/lib/rag/logger";
 import { getVectorStore } from "@/lib/rag/store";
@@ -267,6 +268,7 @@ export async function deleteIndexedDocument(documentId: string): Promise<void> {
 export async function rebuildVectorIndex(): Promise<void> {
   await getVectorStore().rebuild();
   await getIndexStatusStore().clearAll();
+  clearEmbeddingCache();
 }
 
 export async function hasIndexedContent(): Promise<boolean> {
@@ -277,36 +279,48 @@ export async function retrieveRelevantChunks(
   query: string,
   topK = TOP_K_CHUNKS,
 ): Promise<RetrievedChunk[]> {
+  const result = await retrieveWithHybridSearch(query, topK);
+  return result.chunks;
+}
+
+export async function retrieveWithHybridSearch(
+  query: string,
+  topK = TOP_K_CHUNKS,
+): Promise<HybridRetrievalResult> {
   const trimmedQuery = query.trim();
 
   if (!trimmedQuery) {
-    return [];
-  }
-
-  const vectorStore = getVectorStore();
-  const indexed = await vectorStore.hasIndexedContent();
-
-  if (!indexed) {
-    ragLog("retrieve", "No indexed content available for retrieval.");
-    return [];
+    return {
+      chunks: [],
+      insufficientRetrieval: false,
+      profile: {
+        originalQuery: "",
+        expandedQuery: "",
+        intent: "balanced",
+        semanticWeight: 0.7,
+        keywordWeight: 0.3,
+        exactMatches: [],
+      },
+    };
   }
 
   try {
-    const queryEmbedding = await embedQuery(trimmedQuery);
-    const results = await vectorStore.similaritySearch(queryEmbedding, topK);
+    const result = await hybridRetrieve(trimmedQuery, topK);
 
     ragLog(
       "retrieve",
-      `Retrieved ${results.length} chunk(s) for query "${trimmedQuery.slice(0, 80)}".`,
+      `Retrieved ${result.chunks.length} chunk(s) for query "${trimmedQuery.slice(0, 80)}".`,
     );
     ragDebug("Retrieval results", {
-      retrievedChunkCount: results.length,
-      topScore: results[0]?.similarityScore,
+      retrievedChunkCount: result.chunks.length,
+      topScore: result.chunks[0]?.similarityScore,
+      insufficientRetrieval: result.insufficientRetrieval,
+      intent: result.profile.intent,
     });
 
-    return results;
+    return result;
   } catch (error) {
-    ragError("retrieve", "Embedding generation failed during retrieval.", error);
+    ragError("retrieve", "Hybrid retrieval failed.", error);
     throw new RetrievalError(formatEmbeddingError(error));
   }
 }

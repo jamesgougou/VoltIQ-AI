@@ -26,7 +26,14 @@ export function buildRetrievedContextSection(chunks: RetrievedChunk[]): string {
   return `Retrieved Document Context\n\n${blocks.join("\n\n")}`;
 }
 
-export function buildSystemContent(chunks: RetrievedChunk[]): string {
+export function buildSystemContent(
+  chunks: RetrievedChunk[],
+  options?: { insufficientRetrieval?: boolean },
+): string {
+  if (options?.insufficientRetrieval) {
+    return `${VOLTIQ_SYSTEM_PROMPT}\n\nThe retrieval engine could not find sufficiently relevant content in the uploaded documents for this question.\n\nYou MUST begin your response with exactly: "I couldn't find sufficient information in the uploaded documents."\n\nYou may then provide clearly labelled general electrical knowledge if appropriate, but do not present it as document content and do not invent citations, clauses, page numbers, or quotations.`;
+  }
+
   const retrievedSection = buildRetrievedContextSection(chunks);
 
   if (!retrievedSection) {

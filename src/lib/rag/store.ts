@@ -1,3 +1,4 @@
+import { buildBM25Index, type BM25Index } from "@/lib/rag/bm25";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { RetrievedChunk, StoredDocumentChunk } from "@/lib/rag/types";
@@ -82,6 +83,8 @@ function migrateSnapshot(snapshot: VectorStoreSnapshot): VectorStoreSnapshot {
 
 export class VectorStore {
   private snapshot: VectorStoreSnapshot | null = null;
+  private bm25Index: BM25Index | null = null;
+  private bm25Signature = "";
 
   private async loadSnapshot(): Promise<VectorStoreSnapshot> {
     if (this.snapshot) {
@@ -103,6 +106,8 @@ export class VectorStore {
     await mkdir(STORE_DIR, { recursive: true });
     await writeFile(STORE_FILE, JSON.stringify(snapshot, null, 2), "utf8");
     this.snapshot = snapshot;
+    this.bm25Index = null;
+    this.bm25Signature = "";
   }
 
   async getDocumentRecord(
@@ -228,6 +233,24 @@ export class VectorStore {
     const snapshot = await this.loadSnapshot();
     return snapshot.chunks.filter((chunk) => chunk.documentId === documentId)
       .length;
+  }
+
+  async getAllChunks(): Promise<StoredDocumentChunk[]> {
+    const snapshot = await this.loadSnapshot();
+    return snapshot.chunks;
+  }
+
+  async getBM25Index(): Promise<BM25Index> {
+    const snapshot = await this.loadSnapshot();
+    const signature = `${snapshot.chunks.length}:${snapshot.chunks[0]?.id ?? ""}:${snapshot.chunks.at(-1)?.id ?? ""}`;
+
+    if (this.bm25Index && this.bm25Signature === signature) {
+      return this.bm25Index;
+    }
+
+    this.bm25Index = buildBM25Index(snapshot.chunks);
+    this.bm25Signature = signature;
+    return this.bm25Index;
   }
 }
 

@@ -6,7 +6,7 @@ import {
   getDocumentIndexStatuses,
   hasIndexedContent,
   resolveIndexingGateMessage,
-  retrieveRelevantChunks,
+  retrieveWithHybridSearch,
 } from "@/lib/rag/retrieve";
 import { encodeSourcesTrailer } from "@/lib/rag/streamMetadata";
 import { toSourceMetadata } from "@/lib/rag/types";
@@ -163,9 +163,10 @@ export async function POST(request: Request) {
 
   try {
     const openai = getOpenAIClient();
-    const retrievedChunks = await retrieveRelevantChunks(
+    const retrieval = await retrieveWithHybridSearch(
       latestUserMessage.content.trim(),
     );
+    const retrievedChunks = retrieval.chunks;
     const sourceMetadata = toSourceMetadata(retrievedChunks);
 
     const abortController = new AbortController();
@@ -178,7 +179,9 @@ export async function POST(request: Request) {
         messages: [
           {
             role: "system",
-            content: buildSystemContent(retrievedChunks),
+            content: buildSystemContent(retrievedChunks, {
+              insufficientRetrieval: retrieval.insufficientRetrieval,
+            }),
           },
           ...history.map((message) => ({
             role: message.role,
