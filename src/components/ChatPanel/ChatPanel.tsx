@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getMockReply, mockReplyDelay } from "@/lib/chat/mockReply";
 import type { ChatMessage } from "@/types/chat";
+import { StudyPanel } from "@/components/Study";
 import { AIToolsPanel } from "./AIToolsPanel";
 import { ChatHistory } from "./ChatHistory";
 import { ChatInput } from "./ChatInput";
@@ -81,6 +82,11 @@ export function ChatPanel({ hasDocuments = false }: ChatPanelProps) {
     setInput(prompt);
   }
 
+  function handleStudySelect(prompt: string) {
+    setInput(prompt);
+    focusInput();
+  }
+
   function handleToolSelect(prompt: string) {
     void sendMessage(prompt);
   }
@@ -117,6 +123,13 @@ export function ChatPanel({ hasDocuments = false }: ChatPanelProps) {
           hasConversation ? "min-h-[min(480px,calc(100vh-20rem))]" : ""
         }`}
       >
+        <div className="border-b border-slate-100 px-4 py-3 sm:px-6">
+          <StudyPanel
+            onStudySelect={handleStudySelect}
+            hasDocuments={hasDocuments}
+            disabled={isLoading}
+          />
+        </div>
         <ChatHistory
           messages={messages}
           isLoading={isLoading}
