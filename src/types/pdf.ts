@@ -1,5 +1,6 @@
 export type PdfParseResult = {
   fileName: string;
+  fileSize: number;
   totalPages: number;
   text: string;
 };
