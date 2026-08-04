@@ -1,11 +1,13 @@
 import OpenAI from "openai";
-import {
-  buildSystemContent,
-  getDocumentExtractionError,
-} from "@/lib/chat/buildPrompt";
+import { buildSystemContent } from "@/lib/chat/buildPrompt";
 import { getOpenAIClient, getOpenAIModel } from "@/lib/openai";
-import { retrieveRelevantChunks } from "@/lib/rag/retriever";
-import type { UploadedDocument } from "@/types/documentContext";
+import {
+  RetrievalError,
+  hasIndexedContent,
+  retrieveRelevantChunks,
+} from "@/lib/rag/retrieve";
+import { encodeSourcesTrailer } from "@/lib/rag/streamMetadata";
+import { toSourceMetadata } from "@/lib/rag/types";
 
 export const runtime = "nodejs";
 
@@ -18,36 +20,21 @@ type ChatRequestMessage = {
 
 type ChatRequestBody = {
   messages?: ChatRequestMessage[];
-  uploadedDocuments?: UploadedDocument[];
+  hasTextDocuments?: boolean;
 };
-
-function normalizeUploadedDocuments(
-  uploadedDocuments: UploadedDocument[] | undefined,
-): UploadedDocument[] {
-  return (
-    uploadedDocuments?.filter((document) => {
-      const content = (document.ocrText ?? document.text)?.trim();
-      return (
-        typeof document.fileName === "string" &&
-        document.fileName.trim().length > 0 &&
-        typeof content === "string" &&
-        content.length > 0
-      );
-    }) ?? []
-  ).map((document) => ({
-    fileName: document.fileName.trim(),
-    text: (document.ocrText ?? document.text).trim(),
-    totalPages: document.totalPages,
-    fileSize: document.fileSize,
-    ocrText: document.ocrText?.trim(),
-  }));
-}
 
 function errorResponse(message: string, status: number) {
   return Response.json({ error: message }, { status });
 }
 
 function mapOpenAIError(error: unknown): { message: string; status: number } {
+  if (error instanceof RetrievalError) {
+    return {
+      message: error.message,
+      status: 503,
+    };
+  }
+
   if (error instanceof OpenAI.APIError) {
     if (error.status === 401) {
       return {
@@ -136,23 +123,6 @@ export async function POST(request: Request) {
     return errorResponse("A user message is required.", 400);
   }
 
-  const uploadedDocuments = normalizeUploadedDocuments(body.uploadedDocuments);
-
-  const extractionError = getDocumentExtractionError(
-    uploadedDocuments.map((document) => ({
-      id: document.fileName,
-      name: document.fileName,
-      text: document.text,
-      ocrText: document.ocrText,
-      totalPages: document.totalPages,
-      fileSize: document.fileSize,
-    })),
-  );
-
-  if (extractionError && uploadedDocuments.length > 0) {
-    return errorResponse(extractionError, 422);
-  }
-
   const apiKey = process.env.OPENAI_API_KEY?.trim();
 
   if (!apiKey) {
@@ -166,16 +136,22 @@ export async function POST(request: Request) {
     console.info(`OPENAI_MODEL not set. Using default model: ${model}.`);
   }
 
+  if (body.hasTextDocuments && !(await hasIndexedContent())) {
+    return errorResponse(
+      "Your documents are still being indexed. Please wait a moment and try again.",
+      503,
+    );
+  }
+
   try {
     const openai = getOpenAIClient();
+    const retrievedChunks = await retrieveRelevantChunks(
+      latestUserMessage.content.trim(),
+    );
+    const sourceMetadata = toSourceMetadata(retrievedChunks);
 
     const abortController = new AbortController();
     const timeoutId = setTimeout(() => abortController.abort(), REQUEST_TIMEOUT_MS);
-
-    const retrievedChunks =
-      uploadedDocuments.length === 0
-        ? await retrieveRelevantChunks(latestUserMessage.content.trim())
-        : [];
 
     const stream = await openai.chat.completions.create(
       {
@@ -184,7 +160,7 @@ export async function POST(request: Request) {
         messages: [
           {
             role: "system",
-            content: buildSystemContent(uploadedDocuments, retrievedChunks),
+            content: buildSystemContent(retrievedChunks),
           },
           ...history.map((message) => ({
             role: message.role,
@@ -198,6 +174,7 @@ export async function POST(request: Request) {
     clearTimeout(timeoutId);
 
     const encoder = new TextEncoder();
+    const sourcesTrailer = encodeSourcesTrailer(sourceMetadata);
 
     const readable = new ReadableStream<Uint8Array>({
       async start(controller) {
@@ -209,6 +186,8 @@ export async function POST(request: Request) {
               controller.enqueue(encoder.encode(text));
             }
           }
+
+          controller.enqueue(encoder.encode(sourcesTrailer));
 
           controller.close();
         } catch (error) {

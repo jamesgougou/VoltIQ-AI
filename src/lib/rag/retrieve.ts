@@ -1,13 +1,20 @@
-import { chunkDocument } from "@/lib/rag/chunker";
-import { embedQuery, embedTexts } from "@/lib/rag/embeddings";
-import { getVectorStore } from "@/lib/rag/vectorStore";
+import { chunkDocument } from "@/lib/rag/chunk";
+import { embedQuery, embedTexts } from "@/lib/rag/embed";
+import { getVectorStore } from "@/lib/rag/store";
 import type {
   IndexDocumentRequest,
   IndexDocumentResult,
   RetrievedChunk,
   StoredDocumentChunk,
-} from "@/types/rag";
-import { TOP_K_CHUNKS } from "@/types/rag";
+} from "@/lib/rag/types";
+import { TOP_K_CHUNKS } from "@/lib/rag/types";
+
+export class RetrievalError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RetrievalError";
+  }
+}
 
 export async function indexDocument(
   request: IndexDocumentRequest,
@@ -39,7 +46,17 @@ export async function indexDocument(
     };
   }
 
-  const embeddings = await embedTexts(chunks.map((chunk) => chunk.text));
+  let embeddings: number[][];
+
+  try {
+    embeddings = await embedTexts(chunks.map((chunk) => chunk.text));
+  } catch (error) {
+    console.error("Embedding generation failed during indexing:", error);
+    throw new RetrievalError(
+      "Unable to generate embeddings for this document. Please try again.",
+    );
+  }
+
   const storedChunks: StoredDocumentChunk[] = chunks.map((chunk, index) => ({
     ...chunk,
     embedding: embeddings[index],
@@ -67,6 +84,10 @@ export async function rebuildVectorIndex(): Promise<void> {
   await getVectorStore().rebuild();
 }
 
+export async function hasIndexedContent(): Promise<boolean> {
+  return getVectorStore().hasIndexedContent();
+}
+
 export async function retrieveRelevantChunks(
   query: string,
   topK = TOP_K_CHUNKS,
@@ -77,12 +98,20 @@ export async function retrieveRelevantChunks(
     return [];
   }
 
-  const hasIndexedContent = await getVectorStore().hasIndexedContent();
+  const vectorStore = getVectorStore();
+  const indexed = await vectorStore.hasIndexedContent();
 
-  if (!hasIndexedContent) {
+  if (!indexed) {
     return [];
   }
 
-  const queryEmbedding = await embedQuery(trimmedQuery);
-  return getVectorStore().similaritySearch(queryEmbedding, topK);
+  try {
+    const queryEmbedding = await embedQuery(trimmedQuery);
+    return vectorStore.similaritySearch(queryEmbedding, topK);
+  } catch (error) {
+    console.error("Embedding generation failed during retrieval:", error);
+    throw new RetrievalError(
+      "Unable to search your documents right now. Please try again.",
+    );
+  }
 }

@@ -1,10 +1,10 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { RetrievedChunk, StoredDocumentChunk } from "@/types/rag";
+import type { RetrievedChunk, StoredDocumentChunk } from "@/lib/rag/types";
 
 type DocumentRecord = {
   documentId: string;
-  documentName: string;
+  filename: string;
   contentHash: string;
   chunkIds: string[];
 };
@@ -42,7 +42,45 @@ function cosineSimilarity(left: number[], right: number[]): number {
   return dotProduct / (Math.sqrt(leftNorm) * Math.sqrt(rightNorm));
 }
 
-class LocalVectorStore {
+function migrateSnapshot(snapshot: VectorStoreSnapshot): VectorStoreSnapshot {
+  return {
+    ...snapshot,
+    chunks: snapshot.chunks.map((chunk, index) => {
+      const legacy = chunk as StoredDocumentChunk & {
+        documentName?: string;
+        pageNumber?: number;
+        score?: number;
+      };
+
+      return {
+        id: legacy.id,
+        documentId: legacy.documentId,
+        filename: legacy.filename ?? legacy.documentName ?? "Unknown document",
+        page: legacy.page ?? legacy.pageNumber,
+        chunkIndex: legacy.chunkIndex ?? index,
+        text: legacy.text,
+        embedding: legacy.embedding,
+      };
+    }),
+    documents: Object.fromEntries(
+      Object.entries(snapshot.documents).map(([key, record]) => {
+        const legacy = record as DocumentRecord & { documentName?: string };
+
+        return [
+          key,
+          {
+            documentId: legacy.documentId,
+            filename: legacy.filename ?? legacy.documentName ?? "Unknown document",
+            contentHash: legacy.contentHash,
+            chunkIds: legacy.chunkIds,
+          },
+        ];
+      }),
+    ),
+  };
+}
+
+export class VectorStore {
   private snapshot: VectorStoreSnapshot | null = null;
 
   private async loadSnapshot(): Promise<VectorStoreSnapshot> {
@@ -52,7 +90,8 @@ class LocalVectorStore {
 
     try {
       const raw = await readFile(STORE_FILE, "utf8");
-      this.snapshot = JSON.parse(raw) as VectorStoreSnapshot;
+      const parsed = JSON.parse(raw) as VectorStoreSnapshot;
+      this.snapshot = migrateSnapshot(parsed);
       return this.snapshot;
     } catch {
       this.snapshot = createEmptySnapshot();
@@ -75,7 +114,7 @@ class LocalVectorStore {
 
   async insertChunks(
     documentId: string,
-    documentName: string,
+    filename: string,
     contentHash: string,
     chunks: StoredDocumentChunk[],
   ): Promise<void> {
@@ -95,7 +134,7 @@ class LocalVectorStore {
     snapshot.chunks.push(...chunks);
     snapshot.documents[documentId] = {
       documentId,
-      documentName,
+      filename,
       contentHash,
       chunkIds: chunks.map((chunk) => chunk.id),
     };
@@ -132,12 +171,13 @@ class LocalVectorStore {
       .map((chunk) => ({
         id: chunk.id,
         documentId: chunk.documentId,
-        documentName: chunk.documentName,
-        pageNumber: chunk.pageNumber,
+        filename: chunk.filename,
+        page: chunk.page,
+        chunkIndex: chunk.chunkIndex,
         text: chunk.text,
-        score: cosineSimilarity(queryEmbedding, chunk.embedding),
+        similarityScore: cosineSimilarity(queryEmbedding, chunk.embedding),
       }))
-      .sort((left, right) => right.score - left.score)
+      .sort((left, right) => right.similarityScore - left.similarityScore)
       .slice(0, topK);
   }
 
@@ -147,17 +187,17 @@ class LocalVectorStore {
   }
 }
 
-let vectorStore: LocalVectorStore | null = null;
+let vectorStore: VectorStore | null = null;
 
-export function getVectorStore(): LocalVectorStore {
+export function getVectorStore(): VectorStore {
   if (!vectorStore) {
-    vectorStore = new LocalVectorStore();
+    vectorStore = new VectorStore();
   }
 
   return vectorStore;
 }
 
 export async function resetVectorStoreForTests(): Promise<void> {
-  vectorStore = new LocalVectorStore();
+  vectorStore = new VectorStore();
   await vectorStore.rebuild();
 }

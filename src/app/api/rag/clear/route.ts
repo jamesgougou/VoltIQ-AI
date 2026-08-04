@@ -1,4 +1,4 @@
-import { rebuildVectorIndex } from "@/lib/rag/retriever";
+import { rebuildVectorIndex } from "@/lib/rag/retrieve";
 
 export const runtime = "nodejs";
 

@@ -22,5 +22,10 @@ export async function embedTexts(texts: string[]): Promise<number[][]> {
 
 export async function embedQuery(text: string): Promise<number[]> {
   const [embedding] = await embedTexts([text]);
+
+  if (!embedding) {
+    throw new Error("EMBEDDING_FAILED");
+  }
+
   return embedding;
 }

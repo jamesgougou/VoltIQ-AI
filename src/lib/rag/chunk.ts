@@ -1,15 +1,16 @@
-import type { DocumentChunkMetadata, PdfPageText } from "@/types/rag";
+import type { DocumentChunk, PdfPageText } from "@/lib/rag/types";
 import {
+  CHUNK_OVERLAP,
   MAX_CHUNK_SIZE,
   MIN_CHUNK_SIZE,
   TARGET_CHUNK_SIZE,
-} from "@/types/rag";
+} from "@/lib/rag/types";
 
 type ChunkSource = {
   documentId: string;
-  documentName: string;
+  filename: string;
   text: string;
-  pageNumber?: number;
+  page?: number;
 };
 
 function createChunkId(documentId: string, index: number): string {
@@ -45,29 +46,38 @@ function splitLongText(text: string): string[] {
 function chunkPlainText(
   source: ChunkSource,
   startIndex: number,
-): { chunks: DocumentChunkMetadata[]; nextIndex: number } {
+): { chunks: DocumentChunk[]; nextIndex: number } {
   const paragraphs = source.text
     .split(/\n\s*\n/)
     .map((paragraph) => paragraph.replace(/\s+/g, " ").trim())
     .filter(Boolean);
 
-  const chunks: DocumentChunkMetadata[] = [];
+  const chunks: DocumentChunk[] = [];
   let buffer = "";
+  let overlapPrefix = "";
   let chunkIndex = startIndex;
 
   function flushBuffer() {
-    if (!buffer.trim()) {
+    const fullText = `${overlapPrefix}${buffer}`.trim();
+
+    if (!fullText) {
       return;
     }
 
     chunks.push({
       id: createChunkId(source.documentId, chunkIndex),
       documentId: source.documentId,
-      documentName: source.documentName,
-      pageNumber: source.pageNumber,
-      text: buffer.trim(),
+      filename: source.filename,
+      page: source.page,
+      chunkIndex,
+      text: fullText,
     });
+
     chunkIndex += 1;
+    overlapPrefix =
+      fullText.length > CHUNK_OVERLAP
+        ? fullText.slice(fullText.length - CHUNK_OVERLAP)
+        : fullText;
     buffer = "";
   }
 
@@ -101,9 +111,14 @@ export function chunkDocument(input: {
   documentName: string;
   text: string;
   pages?: PdfPageText[];
-}): DocumentChunkMetadata[] {
+}): DocumentChunk[] {
+  const sourceBase = {
+    documentId: input.documentId,
+    filename: input.documentName,
+  };
+
   if (input.pages?.length) {
-    const chunks: DocumentChunkMetadata[] = [];
+    const chunks: DocumentChunk[] = [];
     let chunkIndex = 0;
 
     for (const page of input.pages) {
@@ -113,10 +128,9 @@ export function chunkDocument(input: {
 
       const result = chunkPlainText(
         {
-          documentId: input.documentId,
-          documentName: input.documentName,
+          ...sourceBase,
           text: page.text,
-          pageNumber: page.pageNumber,
+          page: page.pageNumber,
         },
         chunkIndex,
       );
@@ -130,8 +144,7 @@ export function chunkDocument(input: {
 
   return chunkPlainText(
     {
-      documentId: input.documentId,
-      documentName: input.documentName,
+      ...sourceBase,
       text: input.text,
     },
     0,

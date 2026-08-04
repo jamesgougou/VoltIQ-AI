@@ -5,4 +5,5 @@ export type ChatMessage = {
   role: ChatRole;
   content: string;
   createdAt: Date;
+  sources?: import("@/lib/rag/types").RetrievedSourceMetadata[];
 };

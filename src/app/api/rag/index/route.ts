@@ -2,7 +2,7 @@ import {
   deleteIndexedDocument,
   indexDocument,
   rebuildVectorIndex,
-} from "@/lib/rag/retriever";
+} from "@/lib/rag/retrieve";
 import type { IndexDocumentRequest } from "@/types/rag";
 
 export const runtime = "nodejs";

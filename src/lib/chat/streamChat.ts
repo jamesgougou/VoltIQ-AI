@@ -1,4 +1,5 @@
-import type { UploadedDocument } from "@/types/documentContext";
+import type { RetrievedSourceMetadata } from "@/lib/rag/types";
+import { stripSourcesMarkerFromStream } from "@/lib/rag/streamMetadata";
 
 export type ChatApiMessage = {
   role: "user" | "assistant";
@@ -16,10 +17,14 @@ export class ChatStreamError extends Error {
 
 export async function streamChatResponse(
   messages: ChatApiMessage[],
-  uploadedDocuments: UploadedDocument[],
-  onChunk: (chunk: string) => void,
-  signal?: AbortSignal,
+  options: {
+    hasTextDocuments: boolean;
+    onChunk: (chunk: string) => void;
+    onSources?: (sources: RetrievedSourceMetadata[]) => void;
+    signal?: AbortSignal;
+  },
 ): Promise<void> {
+  const { hasTextDocuments, onChunk, onSources, signal } = options;
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), STREAM_TIMEOUT_MS);
 
@@ -32,7 +37,7 @@ export async function streamChatResponse(
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ messages, uploadedDocuments }),
+      body: JSON.stringify({ messages, hasTextDocuments }),
       signal: controller.signal,
     });
 
@@ -48,7 +53,8 @@ export async function streamChatResponse(
         if (response.status === 401) {
           errorMessage = "Your OpenAI API key appears to be invalid.";
         } else if (response.status === 503) {
-          errorMessage = "OpenAI API key is not configured.";
+          errorMessage =
+            "OpenAI API key is not configured, or your documents are still being indexed. Please try again shortly.";
         } else if (response.status === 504) {
           errorMessage = "The request timed out. Please try again.";
         } else if (response.status === 422) {
@@ -68,6 +74,9 @@ export async function streamChatResponse(
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
+    let accumulated = "";
+    let emittedLength = 0;
+    let sources: RetrievedSourceMetadata[] = [];
 
     while (true) {
       const { done, value } = await reader.read();
@@ -76,12 +85,35 @@ export async function streamChatResponse(
         break;
       }
 
-      const chunk = decoder.decode(value, { stream: true });
+      accumulated += decoder.decode(value, { stream: true });
 
-      if (chunk) {
-        onChunk(chunk);
+      const parsed = stripSourcesMarkerFromStream(accumulated, emittedLength);
+
+      if (parsed.emitted) {
+        onChunk(parsed.emitted);
+      }
+
+      emittedLength = parsed.nextEmittedLength;
+
+      if (parsed.complete) {
+        sources = parsed.sources;
+        break;
       }
     }
+
+    accumulated += decoder.decode();
+
+    const finalParsed = stripSourcesMarkerFromStream(accumulated, emittedLength);
+
+    if (finalParsed.emitted) {
+      onChunk(finalParsed.emitted);
+    }
+
+    if (finalParsed.sources.length > 0) {
+      sources = finalParsed.sources;
+    }
+
+    onSources?.(sources);
   } catch (error) {
     if (error instanceof ChatStreamError) {
       throw error;

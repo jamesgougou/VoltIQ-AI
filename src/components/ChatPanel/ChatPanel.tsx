@@ -1,10 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getDocumentExtractionError } from "@/lib/chat/buildPrompt";
+import { getDocumentExtractionError, hasUsableDocumentContent } from "@/lib/chat/buildPrompt";
 import { streamChatResponse } from "@/lib/chat/streamChat";
 import type { ChatMessage } from "@/types/chat";
-import { toUploadedDocuments } from "@/types/documentContext";
 import type { DocumentContextItem } from "@/types/documentContext";
 import { StudyPanel } from "@/components/Study";
 import { AIToolsPanel } from "./AIToolsPanel";
@@ -20,12 +19,14 @@ function createMessage(
   role: ChatMessage["role"],
   content: string,
   id?: string,
+  sources?: ChatMessage["sources"],
 ): ChatMessage {
   return {
     id: id ?? crypto.randomUUID(),
     role,
     content,
     createdAt: new Date(),
+    sources,
   };
 }
 
@@ -92,7 +93,7 @@ export function ChatPanel({
 
       let streamedContent = "";
       let hasStreamStarted = false;
-      const uploadedDocuments = toUploadedDocuments(documents);
+      const hasTextDocuments = hasUsableDocumentContent(documents);
 
       try {
         await streamChatResponse(
@@ -100,27 +101,42 @@ export function ChatPanel({
             role: message.role,
             content: message.content,
           })),
-          uploadedDocuments,
-          (chunk) => {
-            streamedContent += chunk;
+          {
+            hasTextDocuments,
+            onChunk: (chunk) => {
+              streamedContent += chunk;
 
-            if (!hasStreamStarted) {
-              hasStreamStarted = true;
-              setIsLoading(false);
-              setMessages((prev) => [
-                ...prev,
-                createMessage("assistant", streamedContent, assistantMessageId),
-              ]);
-              return;
-            }
+              if (!hasStreamStarted) {
+                hasStreamStarted = true;
+                setIsLoading(false);
+                setMessages((prev) => [
+                  ...prev,
+                  createMessage(
+                    "assistant",
+                    streamedContent,
+                    assistantMessageId,
+                  ),
+                ]);
+                return;
+              }
 
-            setMessages((prev) =>
-              prev.map((message) =>
-                message.id === assistantMessageId
-                  ? { ...message, content: streamedContent }
-                  : message,
-              ),
-            );
+              setMessages((prev) =>
+                prev.map((message) =>
+                  message.id === assistantMessageId
+                    ? { ...message, content: streamedContent }
+                    : message,
+                ),
+              );
+            },
+            onSources: (sources) => {
+              setMessages((prev) =>
+                prev.map((message) =>
+                  message.id === assistantMessageId
+                    ? { ...message, sources }
+                    : message,
+                ),
+              );
+            },
           },
         );
 

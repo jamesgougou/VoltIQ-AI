@@ -1,4 +1,4 @@
-import { deleteIndexedDocument } from "@/lib/rag/retriever";
+import { deleteIndexedDocument } from "@/lib/rag/retrieve";
 
 export const runtime = "nodejs";
 
