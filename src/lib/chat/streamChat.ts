@@ -19,12 +19,13 @@ export async function streamChatResponse(
   messages: ChatApiMessage[],
   options: {
     hasTextDocuments: boolean;
+    documentIds: string[];
     onChunk: (chunk: string) => void;
     onSources?: (sources: RetrievedSourceMetadata[]) => void;
     signal?: AbortSignal;
   },
 ): Promise<void> {
-  const { hasTextDocuments, onChunk, onSources, signal } = options;
+  const { hasTextDocuments, documentIds, onChunk, onSources, signal } = options;
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), STREAM_TIMEOUT_MS);
 
@@ -37,7 +38,7 @@ export async function streamChatResponse(
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ messages, hasTextDocuments }),
+      body: JSON.stringify({ messages, hasTextDocuments, documentIds }),
       signal: controller.signal,
     });
 
@@ -59,7 +60,7 @@ export async function streamChatResponse(
           errorMessage = "The request timed out. Please try again.";
         } else if (response.status === 422) {
           errorMessage =
-            "Unable to extract readable text from the uploaded documents. Please upload a text-based PDF, paste the content directly, or try a different file.";
+            "Document indexing failed. Please review the upload and try again.";
         }
       }
 

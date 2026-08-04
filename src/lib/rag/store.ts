@@ -185,6 +185,50 @@ export class VectorStore {
     const snapshot = await this.loadSnapshot();
     return snapshot.chunks.length > 0;
   }
+
+  async verifyDocumentStorage(
+    documentId: string,
+    expectedChunkCount: number,
+  ): Promise<void> {
+    const snapshot = await this.loadSnapshot();
+    const record = snapshot.documents[documentId];
+
+    if (!record) {
+      throw new Error(
+        `Storage verification failed: no document record for ${documentId}.`,
+      );
+    }
+
+    if (record.chunkIds.length !== expectedChunkCount) {
+      throw new Error(
+        `Storage verification failed: expected ${expectedChunkCount} chunk ids, found ${record.chunkIds.length}.`,
+      );
+    }
+
+    const storedChunks = snapshot.chunks.filter(
+      (chunk) => chunk.documentId === documentId,
+    );
+
+    if (storedChunks.length !== expectedChunkCount) {
+      throw new Error(
+        `Storage verification failed: expected ${expectedChunkCount} stored chunks, found ${storedChunks.length}.`,
+      );
+    }
+
+    for (const chunk of storedChunks) {
+      if (!chunk.embedding?.length) {
+        throw new Error(
+          `Storage verification failed: chunk ${chunk.id} is missing its embedding vector.`,
+        );
+      }
+    }
+  }
+
+  async getStoredChunkCount(documentId: string): Promise<number> {
+    const snapshot = await this.loadSnapshot();
+    return snapshot.chunks.filter((chunk) => chunk.documentId === documentId)
+      .length;
+  }
 }
 
 let vectorStore: VectorStore | null = null;

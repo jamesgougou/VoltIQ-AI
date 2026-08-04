@@ -1,3 +1,14 @@
+export type DocumentIndexStatus = "indexing" | "ready" | "failed";
+
+export type DocumentIndexState = {
+  documentId: string;
+  filename: string;
+  status: DocumentIndexStatus;
+  error?: string;
+  chunkCount?: number;
+  updatedAt: string;
+};
+
 export type PdfPageText = {
   pageNumber: number;
   text: string;
@@ -41,6 +52,8 @@ export type IndexDocumentResult = {
   documentId: string;
   chunkCount: number;
   skipped: boolean;
+  status: DocumentIndexStatus;
+  error?: string;
 };
 
 export const PASTED_TEXT_DOCUMENT_ID = "pasted-text";
@@ -50,6 +63,7 @@ export const MIN_CHUNK_SIZE = 800;
 export const MAX_CHUNK_SIZE = 1200;
 export const CHUNK_OVERLAP = 200;
 export const TOP_K_CHUNKS = 6;
+export const EMBED_BATCH_SIZE = 20;
 
 export function toSourceMetadata(
   chunks: RetrievedChunk[],

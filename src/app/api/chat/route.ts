@@ -3,7 +3,9 @@ import { buildSystemContent } from "@/lib/chat/buildPrompt";
 import { getOpenAIClient, getOpenAIModel } from "@/lib/openai";
 import {
   RetrievalError,
+  getDocumentIndexStatuses,
   hasIndexedContent,
+  resolveIndexingGateMessage,
   retrieveRelevantChunks,
 } from "@/lib/rag/retrieve";
 import { encodeSourcesTrailer } from "@/lib/rag/streamMetadata";
@@ -21,6 +23,7 @@ type ChatRequestMessage = {
 type ChatRequestBody = {
   messages?: ChatRequestMessage[];
   hasTextDocuments?: boolean;
+  documentIds?: string[];
 };
 
 function errorResponse(message: string, status: number) {
@@ -136,7 +139,22 @@ export async function POST(request: Request) {
     console.info(`OPENAI_MODEL not set. Using default model: ${model}.`);
   }
 
-  if (body.hasTextDocuments && !(await hasIndexedContent())) {
+  const documentIds = body.documentIds?.filter(
+    (documentId) => typeof documentId === "string" && documentId.trim().length > 0,
+  );
+
+  if (body.hasTextDocuments && documentIds?.length) {
+    const statuses = await getDocumentIndexStatuses(documentIds);
+    const gateMessage = resolveIndexingGateMessage(documentIds, statuses);
+
+    if (gateMessage) {
+      const isFailed = statuses.some((status) => status.status === "failed");
+      console.info(
+        `[RAG:chat] Blocking chat (${isFailed ? "failed" : "indexing"}): ${gateMessage}`,
+      );
+      return errorResponse(gateMessage, isFailed ? 422 : 503);
+    }
+  } else if (body.hasTextDocuments && !(await hasIndexedContent())) {
     return errorResponse(
       "Your documents are still being indexed. Please wait a moment and try again.",
       503,

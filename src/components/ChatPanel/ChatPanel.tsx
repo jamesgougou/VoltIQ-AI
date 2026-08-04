@@ -3,8 +3,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getDocumentExtractionError, hasUsableDocumentContent } from "@/lib/chat/buildPrompt";
 import { streamChatResponse } from "@/lib/chat/streamChat";
+import { resolveClientIndexingGateMessage, fetchDocumentIndexStatuses, mergeIndexStates } from "@/lib/rag/client";
 import type { ChatMessage } from "@/types/chat";
 import type { DocumentContextItem } from "@/types/documentContext";
+import type { DocumentIndexState } from "@/types/rag";
 import { StudyPanel } from "@/components/Study";
 import { AIToolsPanel } from "./AIToolsPanel";
 import { ChatHistory } from "./ChatHistory";
@@ -13,6 +15,7 @@ import { ChatInput } from "./ChatInput";
 type ChatPanelProps = {
   hasDocuments?: boolean;
   documents?: DocumentContextItem[];
+  indexStates?: Record<string, DocumentIndexState>;
 };
 
 function createMessage(
@@ -33,6 +36,7 @@ function createMessage(
 export function ChatPanel({
   hasDocuments = false,
   documents = [],
+  indexStates = {},
 }: ChatPanelProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -91,9 +95,31 @@ export function ChatPanel({
         return;
       }
 
+      const indexingGateMessage = resolveClientIndexingGateMessage(
+        documents,
+        hasUsableDocumentContent(documents)
+          ? mergeIndexStates(
+              indexStates,
+              await fetchDocumentIndexStatuses(
+                documents.map((document) => document.id),
+              ),
+            )
+          : indexStates,
+      );
+
+      if (indexingGateMessage) {
+        setIsLoading(false);
+        setMessages((prev) => [
+          ...prev,
+          createMessage("assistant", indexingGateMessage, assistantMessageId),
+        ]);
+        return;
+      }
+
       let streamedContent = "";
       let hasStreamStarted = false;
       const hasTextDocuments = hasUsableDocumentContent(documents);
+      const documentIds = documents.map((document) => document.id);
 
       try {
         await streamChatResponse(
@@ -103,6 +129,7 @@ export function ChatPanel({
           })),
           {
             hasTextDocuments,
+            documentIds,
             onChunk: (chunk) => {
               streamedContent += chunk;
 
@@ -177,7 +204,7 @@ export function ChatPanel({
         setIsLoading(false);
       }
     },
-    [input, isLoading, hasDocuments, messages, documents],
+    [input, isLoading, hasDocuments, messages, documents, indexStates],
   );
 
   function handlePromptSelect(prompt: string) {
