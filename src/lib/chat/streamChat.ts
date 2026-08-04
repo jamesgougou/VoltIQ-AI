@@ -3,6 +3,12 @@ export type ChatApiMessage = {
   content: string;
 };
 
+export type ChatApiDocument = {
+  name: string;
+  text: string;
+  ocrText?: string;
+};
+
 const STREAM_TIMEOUT_MS = 65_000;
 
 export class ChatStreamError extends Error {
@@ -14,6 +20,7 @@ export class ChatStreamError extends Error {
 
 export async function streamChatResponse(
   messages: ChatApiMessage[],
+  documents: ChatApiDocument[],
   onChunk: (chunk: string) => void,
   signal?: AbortSignal,
 ): Promise<void> {
@@ -29,7 +36,7 @@ export async function streamChatResponse(
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ messages }),
+      body: JSON.stringify({ messages, documents }),
       signal: controller.signal,
     });
 
@@ -45,10 +52,12 @@ export async function streamChatResponse(
         if (response.status === 401) {
           errorMessage = "Your OpenAI API key appears to be invalid.";
         } else if (response.status === 503) {
-          errorMessage =
-            "VoltIQ AI is not configured. Please add your OpenAI API key.";
+          errorMessage = "OpenAI API key is not configured.";
         } else if (response.status === 504) {
           errorMessage = "The request timed out. Please try again.";
+        } else if (response.status === 422) {
+          errorMessage =
+            "Unable to extract readable text from the uploaded documents. Please upload a text-based PDF, paste the content directly, or try a different file.";
         }
       }
 

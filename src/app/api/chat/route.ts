@@ -1,6 +1,7 @@
 import OpenAI from "openai";
+import { buildSystemContent, getDocumentExtractionError } from "@/lib/chat/buildPrompt";
 import { getOpenAIClient, getOpenAIModel } from "@/lib/openai";
-import { VOLTIQ_SYSTEM_PROMPT } from "@/lib/chat/systemPrompt";
+import type { DocumentContextItem } from "@/types/documentContext";
 
 export const runtime = "nodejs";
 
@@ -13,6 +14,7 @@ type ChatRequestMessage = {
 
 type ChatRequestBody = {
   messages?: ChatRequestMessage[];
+  documents?: DocumentContextItem[];
 };
 
 function errorResponse(message: string, status: number) {
@@ -44,10 +46,12 @@ function mapOpenAIError(error: unknown): { message: string; status: number } {
   }
 
   if (error instanceof Error) {
-    if (error.message === "MISSING_API_KEY") {
+    if (
+      error.message === "MISSING_OPENAI_API_KEY" ||
+      error.message === "MISSING_API_KEY"
+    ) {
       return {
-        message:
-          "VoltIQ AI is not configured. Please add your OpenAI API key.",
+        message: "OpenAI API key is not configured.",
         status: 503,
       };
     }
@@ -106,9 +110,33 @@ export async function POST(request: Request) {
     return errorResponse("A user message is required.", 400);
   }
 
+  const documents = body.documents?.filter(
+    (document) =>
+      typeof document.name === "string" &&
+      document.name.trim().length > 0 &&
+      (typeof document.text === "string" || typeof document.ocrText === "string"),
+  );
+
+  const extractionError = getDocumentExtractionError(documents);
+  if (extractionError) {
+    return errorResponse(extractionError, 422);
+  }
+
+  const apiKey = process.env.OPENAI_API_KEY?.trim();
+
+  if (!apiKey) {
+    console.error("OpenAI API key not found.");
+    return errorResponse("OpenAI API key is not configured.", 503);
+  }
+
+  const model = getOpenAIModel();
+
+  if (!process.env.OPENAI_MODEL?.trim()) {
+    console.info(`OPENAI_MODEL not set. Using default model: ${model}.`);
+  }
+
   try {
     const openai = getOpenAIClient();
-    const model = getOpenAIModel();
 
     const abortController = new AbortController();
     const timeoutId = setTimeout(() => abortController.abort(), REQUEST_TIMEOUT_MS);
@@ -118,7 +146,7 @@ export async function POST(request: Request) {
         model,
         stream: true,
         messages: [
-          { role: "system", content: VOLTIQ_SYSTEM_PROMPT },
+          { role: "system", content: buildSystemContent(documents ?? []) },
           ...history.map((message) => ({
             role: message.role,
             content: message.content.trim(),

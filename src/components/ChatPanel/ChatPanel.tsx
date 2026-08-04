@@ -1,8 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { getDocumentExtractionError } from "@/lib/chat/buildPrompt";
 import { streamChatResponse } from "@/lib/chat/streamChat";
 import type { ChatMessage } from "@/types/chat";
+import type { DocumentContextItem } from "@/types/documentContext";
 import { StudyPanel } from "@/components/Study";
 import { AIToolsPanel } from "./AIToolsPanel";
 import { ChatHistory } from "./ChatHistory";
@@ -10,6 +12,7 @@ import { ChatInput } from "./ChatInput";
 
 type ChatPanelProps = {
   hasDocuments?: boolean;
+  documents?: DocumentContextItem[];
 };
 
 function createMessage(
@@ -25,7 +28,10 @@ function createMessage(
   };
 }
 
-export function ChatPanel({ hasDocuments = false }: ChatPanelProps) {
+export function ChatPanel({
+  hasDocuments = false,
+  documents = [],
+}: ChatPanelProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -73,6 +79,16 @@ export function ChatPanel({ hasDocuments = false }: ChatPanelProps) {
       setInput("");
       setIsLoading(true);
 
+      const extractionError = getDocumentExtractionError(documents);
+      if (extractionError) {
+        setIsLoading(false);
+        setMessages((prev) => [
+          ...prev,
+          createMessage("assistant", extractionError, assistantMessageId),
+        ]);
+        return;
+      }
+
       let streamedContent = "";
       let hasStreamStarted = false;
 
@@ -82,6 +98,7 @@ export function ChatPanel({ hasDocuments = false }: ChatPanelProps) {
             role: message.role,
             content: message.content,
           })),
+          documents,
           (chunk) => {
             streamedContent += chunk;
 
@@ -142,7 +159,7 @@ export function ChatPanel({ hasDocuments = false }: ChatPanelProps) {
         setIsLoading(false);
       }
     },
-    [input, isLoading, hasDocuments, messages],
+    [input, isLoading, hasDocuments, messages, documents],
   );
 
   function handlePromptSelect(prompt: string) {

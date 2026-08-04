@@ -7,10 +7,12 @@ import { TextIcon } from "./UploadIcons";
 
 type TextPasteManagerProps = {
   onHasContentChange?: (hasContent: boolean) => void;
+  onTextChange?: (text: string) => void;
 };
 
 export function TextPasteManager({
   onHasContentChange,
+  onTextChange,
 }: TextPasteManagerProps) {
   const [text, setText] = useState("");
 
@@ -21,6 +23,10 @@ export function TextPasteManager({
   useEffect(() => {
     onHasContentChange?.(hasText);
   }, [hasText, onHasContentChange]);
+
+  useEffect(() => {
+    onTextChange?.(text);
+  }, [text, onTextChange]);
 
   function handleClear() {
     setText("");

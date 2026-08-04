@@ -1,10 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { ChatPanel } from "@/components/ChatPanel";
 import { ImageUploadManager } from "@/components/upload/ImageUploadManager";
 import { PdfUploadManager } from "@/components/upload/PdfUploadManager";
 import { TextPasteManager } from "@/components/upload/TextPasteManager";
+import type { DocumentContextItem } from "@/types/documentContext";
 import type { PdfDocument, PdfParseResult } from "@/types/pdf";
 
 export function UploadSection() {
@@ -12,6 +13,7 @@ export function UploadSection() {
   const [resetKey, setResetKey] = useState(0);
   const [hasImages, setHasImages] = useState(false);
   const [hasText, setHasText] = useState(false);
+  const [pastedText, setPastedText] = useState("");
 
   function handlePdfAdd(result: PdfParseResult) {
     setPdfs((current) => [
@@ -31,14 +33,31 @@ export function UploadSection() {
     setPdfs([]);
     setHasImages(false);
     setHasText(false);
+    setPastedText("");
     setResetKey((key) => key + 1);
   }
 
   const hasDocuments = pdfs.length > 0 || hasImages || hasText;
 
+  const documents = useMemo((): DocumentContextItem[] => {
+    const items: DocumentContextItem[] = pdfs.map((pdf) => ({
+      name: pdf.fileName,
+      text: pdf.text,
+    }));
+
+    if (pastedText.trim()) {
+      items.push({
+        name: "Pasted Text",
+        text: pastedText,
+      });
+    }
+
+    return items;
+  }, [pdfs, pastedText]);
+
   return (
     <section className="flex flex-col gap-6">
-      <ChatPanel hasDocuments={hasDocuments} />
+      <ChatPanel hasDocuments={hasDocuments} documents={documents} />
 
       <section
         className="rounded-xl border border-slate-200 bg-white shadow-sm"
@@ -79,6 +98,7 @@ export function UploadSection() {
           <TextPasteManager
             key={`text-${resetKey}`}
             onHasContentChange={setHasText}
+            onTextChange={setPastedText}
           />
         </div>
       </section>
