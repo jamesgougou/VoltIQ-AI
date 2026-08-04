@@ -1,8 +1,10 @@
 import {
-  deleteIndexedDocument,
-  indexDocument,
-} from "@/lib/rag/retrieve";
+  clearIndexCancellation,
+  isCancellationError,
+  registerIndexCancellation,
+} from "@/lib/rag/indexCancellation";
 import { ragLog } from "@/lib/rag/logger";
+import { indexDocument } from "@/lib/rag/retrieve";
 import type { IndexDocumentRequest, IndexDocumentResult } from "@/types/rag";
 
 export const runtime = "nodejs";
@@ -48,10 +50,23 @@ export async function POST(request: Request) {
     return errorResponse("OpenAI API key is not configured.", 503);
   }
 
+  const signal = registerIndexCancellation(body.documentId);
+
   try {
-    const result: IndexDocumentResult = await indexDocument(body);
+    const result: IndexDocumentResult = await indexDocument(body, signal);
     return Response.json(result);
   } catch (error) {
+    if (isCancellationError(error)) {
+      return Response.json({
+        documentId: body.documentId,
+        chunkCount: 0,
+        skipped: false,
+        status: "failed",
+        error: "Document indexing cancelled.",
+        cancelled: true,
+      } satisfies IndexDocumentResult & { cancelled?: boolean });
+    }
+
     console.error("Failed to index document:", error);
 
     const message =
@@ -69,5 +84,7 @@ export async function POST(request: Request) {
       } satisfies IndexDocumentResult,
       { status: 500 },
     );
+  } finally {
+    clearIndexCancellation(body.documentId);
   }
 }

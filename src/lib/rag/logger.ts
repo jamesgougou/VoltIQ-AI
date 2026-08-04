@@ -10,7 +10,8 @@ export type RagStage =
   | "store"
   | "ready"
   | "failed"
-  | "retrieve";
+  | "retrieve"
+  | "cancel";
 
 function prefix(stage: RagStage): string {
   return `[RAG:${stage}]`;

@@ -12,6 +12,7 @@ type DocumentIndexProgressCardProps = {
   filename: string;
   state?: DocumentIndexState;
   onRetry?: () => void;
+  onCancel?: () => void;
   compact?: boolean;
 };
 
@@ -78,6 +79,7 @@ export function DocumentIndexProgressCard({
   filename,
   state,
   onRetry,
+  onCancel,
   compact = false,
 }: DocumentIndexProgressCardProps) {
   if (!state) {
@@ -156,6 +158,16 @@ export function DocumentIndexProgressCard({
         <div className="mt-3 border-t border-violet-100 pt-3">
           <PipelineStages currentStage={state.stage ?? "uploading"} />
         </div>
+      )}
+
+      {onCancel && (
+        <button
+          type="button"
+          onClick={onCancel}
+          className="mt-3 w-full rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-medium text-slate-700 transition-colors hover:border-slate-300 hover:bg-slate-50"
+        >
+          Cancel
+        </button>
       )}
     </div>
   );

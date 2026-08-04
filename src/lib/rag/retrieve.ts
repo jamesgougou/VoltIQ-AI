@@ -5,6 +5,12 @@ import {
 } from "@/lib/rag/embed";
 import { clearEmbeddingCache } from "@/lib/rag/embeddingCache";
 import { hybridRetrieve, type HybridRetrievalResult } from "@/lib/rag/hybridSearch";
+import {
+  assertNotCancelled,
+  cancelIndexOperation,
+  IndexCancelledError,
+  isCancellationError,
+} from "@/lib/rag/indexCancellation";
 import { getIndexStatusStore } from "@/lib/rag/indexStatus";
 import { ragDebug, ragError, ragLog } from "@/lib/rag/logger";
 import { getVectorStore } from "@/lib/rag/store";
@@ -103,6 +109,7 @@ export async function getDocumentIndexStatuses(
 
 export async function indexDocument(
   request: IndexDocumentRequest,
+  signal?: AbortSignal,
 ): Promise<IndexDocumentResult> {
   const vectorStore = getVectorStore();
   const statusStore = getIndexStatusStore();
@@ -153,6 +160,7 @@ export async function indexDocument(
   });
 
   try {
+    assertNotCancelled(signal);
     await statusStore.updateProgress(documentId, { stage: "chunking" });
     ragLog("chunk", `Chunking document: ${documentName}`);
 
@@ -195,6 +203,8 @@ export async function indexDocument(
       };
     }
 
+    assertNotCancelled(signal);
+
     await statusStore.updateProgress(documentId, {
       stage: "embedding",
       embeddedChunks: 0,
@@ -231,7 +241,10 @@ export async function indexDocument(
           });
         }
       },
+      signal,
     );
+
+    assertNotCancelled(signal);
 
     if (embeddings.length !== chunks.length) {
       throw new Error(
@@ -256,6 +269,8 @@ export async function indexDocument(
       embeddedChunks: chunks.length,
       totalChunks: chunks.length,
     });
+
+    assertNotCancelled(signal);
 
     ragLog(
       "store",
@@ -290,6 +305,13 @@ export async function indexDocument(
       status: "ready",
     };
   } catch (error) {
+    if (isCancellationError(error) || signal?.aborted) {
+      ragLog("cancel", `Indexing cancelled for ${documentName} (${documentId}).`);
+      await vectorStore.deleteDocument(documentId);
+      await statusStore.removeStatus(documentId);
+      throw new IndexCancelledError();
+    }
+
     const message = formatEmbeddingError(error);
 
     ragError("failed", `Indexing failed for ${documentName}: ${message}`, error);
@@ -302,6 +324,13 @@ export async function indexDocument(
 
     throw new RetrievalError(message);
   }
+}
+
+export async function cancelIndexedDocument(documentId: string): Promise<void> {
+  cancelIndexOperation(documentId);
+  await getVectorStore().deleteDocument(documentId);
+  await getIndexStatusStore().removeStatus(documentId);
+  ragLog("cancel", `Removed cancelled document from index: ${documentId}.`);
 }
 
 export async function deleteIndexedDocument(documentId: string): Promise<void> {

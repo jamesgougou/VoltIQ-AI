@@ -95,6 +95,7 @@ export async function pollIndexProgress(
 
 export async function indexDocumentInRag(
   request: IndexDocumentRequest,
+  signal?: AbortSignal,
 ): Promise<IndexDocumentResult> {
   const payload = buildIndexRequest(request);
   const pageCount = payload.pages?.length ?? 0;
@@ -110,6 +111,16 @@ export async function indexDocumentInRag(
     INDEX_REQUEST_TIMEOUT_MS,
   );
 
+  if (signal) {
+    if (signal.aborted) {
+      controller.abort();
+    } else {
+      signal.addEventListener("abort", () => controller.abort(), {
+        once: true,
+      });
+    }
+  }
+
   let response: Response;
 
   try {
@@ -122,6 +133,10 @@ export async function indexDocumentInRag(
       signal: controller.signal,
     });
   } catch (error) {
+    if (signal?.aborted) {
+      throw new Error("Document indexing cancelled.");
+    }
+
     if (error instanceof DOMException && error.name === "AbortError") {
       throw new Error(
         "Document indexing timed out before completion. Remove the document and upload again.",
@@ -134,9 +149,17 @@ export async function indexDocumentInRag(
   }
 
   const result = (await response.json().catch(() => null)) as
-    | IndexDocumentResult
+    | (IndexDocumentResult & { cancelled?: boolean })
     | { error?: string }
     | null;
+
+  if (
+    result &&
+    "cancelled" in result &&
+    result.cancelled
+  ) {
+    throw new Error("Document indexing cancelled.");
+  }
 
   if (!response.ok || !result || !("status" in result)) {
     throw new Error(
@@ -252,6 +275,24 @@ export async function deleteDocumentFromRag(documentId: string): Promise<void> {
     } | null;
 
     throw new Error(payload?.error || "Unable to remove the document index.");
+  }
+}
+
+export async function cancelDocumentFromRag(documentId: string): Promise<void> {
+  const response = await fetch("/api/rag/cancel", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ documentId }),
+  });
+
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as {
+      error?: string;
+    } | null;
+
+    throw new Error(payload?.error || "Unable to cancel document indexing.");
   }
 }
 

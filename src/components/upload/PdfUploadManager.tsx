@@ -16,6 +16,8 @@ type PdfUploadManagerProps = {
   onAdd: (result: PdfParseResult) => void;
   onRemove: (id: string) => void;
   onRetry?: (documentId: string) => void;
+  onCancel?: (documentId: string) => void;
+  onParseCancelled?: () => void;
   onError?: () => void;
 };
 
@@ -25,11 +27,20 @@ export function PdfUploadManager({
   onAdd,
   onRemove,
   onRetry,
+  onCancel,
+  onParseCancelled,
   onError,
 }: PdfUploadManagerProps) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const parseAbortRef = useRef(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  function cancelParsing() {
+    parseAbortRef.current = true;
+    setIsLoading(false);
+    onParseCancelled?.();
+  }
 
   function openFilePicker() {
     inputRef.current?.click();
@@ -40,11 +51,17 @@ export function PdfUploadManager({
     if (!file) return;
 
     setError(null);
+    parseAbortRef.current = false;
     setIsLoading(true);
 
     try {
       const { parsePdf } = await import("@/lib/pdf/parsePdf.client");
       const { totalPages, text, pages } = await parsePdf(file);
+
+      if (parseAbortRef.current) {
+        return;
+      }
+
       onAdd({
         fileName: file.name,
         fileSize: file.size,
@@ -53,6 +70,10 @@ export function PdfUploadManager({
         pages,
       });
     } catch (err) {
+      if (parseAbortRef.current) {
+        return;
+      }
+
       const message =
         err instanceof Error ? err.message : "Failed to parse PDF.";
       setError(message);
@@ -92,6 +113,7 @@ export function PdfUploadManager({
               progressPercent: 12,
               updatedAt: new Date().toISOString(),
             }}
+            onCancel={cancelParsing}
             compact
           />
         </div>
@@ -152,6 +174,11 @@ export function PdfUploadManager({
                     filename={pdf.fileName}
                     state={indexStates[pdf.id]}
                     onRetry={onRetry ? () => onRetry(pdf.id) : undefined}
+                    onCancel={
+                      indexStates[pdf.id]?.status === "indexing" && onCancel
+                        ? () => onCancel(pdf.id)
+                        : undefined
+                    }
                     compact
                   />
                 )}

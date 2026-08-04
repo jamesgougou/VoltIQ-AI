@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChatPanel } from "@/components/ChatPanel";
 import {
+  cancelDocumentFromRag,
   clearRagIndex,
   createClientIndexState,
   deleteDocumentFromRag,
@@ -36,6 +37,11 @@ export function UploadSection() {
   const indexedHashesRef = useRef<Map<string, string>>(new Map());
   const indexingInFlightRef = useRef<Set<string>>(new Set());
   const previousIndexStatesRef = useRef<Record<string, DocumentIndexState>>({});
+  const indexAbortControllersRef = useRef<Map<string, AbortController>>(
+    new Map(),
+  );
+  const cancelledDocumentIdsRef = useRef<Set<string>>(new Set());
+  const cancelledPastedTextHashRef = useRef<string | null>(null);
 
   function updateIndexState(state: DocumentIndexState) {
     setIndexStates((current) => ({
@@ -121,6 +127,8 @@ export function UploadSection() {
 
       indexingInFlightRef.current.add(documentId);
       const pollController = new AbortController();
+      const fetchController = new AbortController();
+      indexAbortControllersRef.current.set(documentId, fetchController);
 
       updateIndexState(
         createClientIndexState(documentId, documentName, "uploading"),
@@ -145,13 +153,24 @@ export function UploadSection() {
           }
         }
 
-        const result = await indexDocumentInRag({
-          documentId,
-          documentName,
-          text,
-          pages,
-          contentHash,
-        });
+        if (cancelledDocumentIdsRef.current.has(documentId)) {
+          return;
+        }
+
+        const result = await indexDocumentInRag(
+          {
+            documentId,
+            documentName,
+            text,
+            pages,
+            contentHash,
+          },
+          fetchController.signal,
+        );
+
+        if (cancelledDocumentIdsRef.current.has(documentId)) {
+          return;
+        }
 
         updateIndexState({
           documentId,
@@ -172,10 +191,18 @@ export function UploadSection() {
           indexedHashesRef.current.delete(documentId);
         }
       } catch (error) {
+        if (cancelledDocumentIdsRef.current.has(documentId)) {
+          return;
+        }
+
         const message =
           error instanceof Error
             ? error.message
             : "Unable to generate embeddings for this document.";
+
+        if (message === "Document indexing cancelled.") {
+          return;
+        }
 
         indexedHashesRef.current.delete(documentId);
 
@@ -204,6 +231,8 @@ export function UploadSection() {
       } finally {
         pollController.abort();
         await pollPromise;
+        indexAbortControllersRef.current.delete(documentId);
+        cancelledDocumentIdsRef.current.delete(documentId);
         indexingInFlightRef.current.delete(documentId);
       }
     },
@@ -213,6 +242,11 @@ export function UploadSection() {
   const retryDocument = useCallback(
     (documentId: string) => {
       indexedHashesRef.current.delete(documentId);
+      cancelledDocumentIdsRef.current.delete(documentId);
+
+      if (documentId === PASTED_TEXT_DOCUMENT_ID) {
+        cancelledPastedTextHashRef.current = null;
+      }
 
       const pdf = pdfs.find((item) => item.id === documentId);
 
@@ -230,6 +264,40 @@ export function UploadSection() {
       }
     },
     [indexDocumentEntry, pdfs, pastedText],
+  );
+
+  const cancelDocument = useCallback(
+    async (documentId: string) => {
+      cancelledDocumentIdsRef.current.add(documentId);
+
+      indexAbortControllersRef.current.get(documentId)?.abort();
+      indexAbortControllersRef.current.delete(documentId);
+      indexingInFlightRef.current.delete(documentId);
+      indexedHashesRef.current.delete(documentId);
+
+      setIndexStates((current) => {
+        const next = { ...current };
+        delete next[documentId];
+        return next;
+      });
+
+      if (documentId === PASTED_TEXT_DOCUMENT_ID) {
+        cancelledPastedTextHashRef.current = await hashDocumentContent(
+          pastedText,
+        );
+      } else {
+        setPdfs((current) => current.filter((pdf) => pdf.id !== documentId));
+      }
+
+      try {
+        await cancelDocumentFromRag(documentId);
+      } catch (error) {
+        console.error("Failed to cancel document indexing:", error);
+      }
+
+      setToastMessage("Document indexing cancelled.");
+    },
+    [pastedText],
   );
 
   useEffect(() => {
@@ -315,6 +383,13 @@ export function UploadSection() {
             console.error("Failed to delete pasted text index:", error);
           }
         }
+        cancelledPastedTextHashRef.current = null;
+        return;
+      }
+
+      const contentHash = await hashDocumentContent(pastedText);
+
+      if (cancelledPastedTextHashRef.current === contentHash) {
         return;
       }
 
@@ -437,6 +512,10 @@ export function UploadSection() {
             onAdd={handlePdfAdd}
             onRemove={handlePdfRemove}
             onRetry={retryDocument}
+            onCancel={(documentId) => void cancelDocument(documentId)}
+            onParseCancelled={() =>
+              setToastMessage("Document indexing cancelled.")
+            }
           />
           <ImageUploadManager
             key={`images-${resetKey}`}
@@ -453,6 +532,11 @@ export function UploadSection() {
                 filename="Pasted Text"
                 state={indexStates[PASTED_TEXT_DOCUMENT_ID]}
                 onRetry={() => retryDocument(PASTED_TEXT_DOCUMENT_ID)}
+                onCancel={
+                  indexStates[PASTED_TEXT_DOCUMENT_ID]?.status === "indexing"
+                    ? () => void cancelDocument(PASTED_TEXT_DOCUMENT_ID)
+                    : undefined
+                }
                 compact
               />
             )}

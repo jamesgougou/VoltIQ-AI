@@ -1,5 +1,9 @@
 import OpenAI from "openai";
 import { getOpenAIClient } from "@/lib/openai";
+import {
+  assertNotCancelled,
+  IndexCancelledError,
+} from "@/lib/rag/indexCancellation";
 import { ragLog } from "@/lib/rag/logger";
 import { EMBED_BATCH_SIZE } from "@/lib/rag/types";
 
@@ -41,29 +45,46 @@ export function formatEmbeddingError(error: unknown): string {
   return "Unable to generate embeddings for this document.";
 }
 
-export async function embedTexts(texts: string[]): Promise<number[][]> {
+export async function embedTexts(
+  texts: string[],
+  signal?: AbortSignal,
+): Promise<number[][]> {
   if (texts.length === 0) {
     return [];
   }
+
+  assertNotCancelled(signal);
 
   const openai = getOpenAIClient();
   const model = getEmbeddingModel();
 
   ragLog("embed", `Calling OpenAI embeddings API (${model}, batch=${texts.length}).`);
 
-  const response = await openai.embeddings.create({
-    model,
-    input: texts,
-  });
+  try {
+    const response = await openai.embeddings.create(
+      {
+        model,
+        input: texts,
+      },
+      signal ? { signal } : undefined,
+    );
 
-  return response.data
-    .sort((left, right) => left.index - right.index)
-    .map((item) => item.embedding);
+    return response.data
+      .sort((left, right) => left.index - right.index)
+      .map((item) => item.embedding);
+  } catch (error) {
+    if (signal?.aborted || (error instanceof Error && error.name === "AbortError")) {
+      throw new IndexCancelledError();
+    }
+
+    throw error;
+  }
 }
 
 export async function embedTextsInBatches(
   texts: string[],
   onProgress?: (completed: number, total: number) => void,
+  signal?: AbortSignal,
 ): Promise<number[][]> {
   if (texts.length === 0) {
     return [];
@@ -73,8 +94,10 @@ export async function embedTextsInBatches(
   const total = texts.length;
 
   for (let start = 0; start < texts.length; start += EMBED_BATCH_SIZE) {
+    assertNotCancelled(signal);
+
     const batch = texts.slice(start, start + EMBED_BATCH_SIZE);
-    const batchEmbeddings = await embedTexts(batch);
+    const batchEmbeddings = await embedTexts(batch, signal);
     embeddings.push(...batchEmbeddings);
 
     onProgress?.(Math.min(start + batch.length, total), total);
