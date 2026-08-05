@@ -1,6 +1,13 @@
 import { buildBM25Index, type BM25Index } from "@/lib/rag/bm25";
+import { AsyncMutex } from "@/lib/rag/asyncMutex";
+import {
+  StorageWriteError,
+  renameWithRetry,
+  writeFileAtomically,
+} from "@/lib/rag/atomicWrite";
+import { assertNotCancelled } from "@/lib/rag/indexCancellation";
 import { constants as bufferConstants } from "node:buffer";
-import { createReadStream, createWriteStream } from "node:fs";
+import { createReadStream } from "node:fs";
 import {
   mkdir,
   readFile,
@@ -11,7 +18,6 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline";
-import { finished } from "node:stream/promises";
 import type { RetrievedChunk, StoredDocumentChunk } from "@/lib/rag/types";
 
 const MAX_STRING_LENGTH = bufferConstants.MAX_STRING_LENGTH;
@@ -49,12 +55,18 @@ const STORE_DIR = path.join(process.cwd(), ".voltiq");
 const LEGACY_STORE_FILE = path.join(STORE_DIR, "rag-store.json");
 const META_FILE = path.join(STORE_DIR, "rag-meta.json");
 const CHUNKS_FILE = path.join(STORE_DIR, "rag-chunks.ndjson");
-const CHUNKS_TEMP_FILE = path.join(STORE_DIR, "rag-chunks.ndjson.tmp");
 
 function createEmptySnapshot(): VectorStoreSnapshot {
   return {
     chunks: [],
     documents: {},
+  };
+}
+
+function cloneSnapshot(snapshot: VectorStoreSnapshot): VectorStoreSnapshot {
+  return {
+    documents: structuredClone(snapshot.documents),
+    chunks: snapshot.chunks.slice(),
   };
 }
 
@@ -104,20 +116,20 @@ function migrateDocuments(
     Object.entries(documents).map(([key, record]) => {
       const legacy = record as DocumentRecord & { documentName?: string };
 
-        return [
-          key,
-          {
-            documentId: legacy.documentId,
-            filename: legacy.filename ?? legacy.documentName ?? "Unknown document",
-            contentHash: legacy.contentHash,
-            chunkIds: legacy.chunkIds,
-            fileSize: legacy.fileSize,
-            totalPages: legacy.totalPages,
-            indexedAt: legacy.indexedAt,
-            hasPdf: legacy.hasPdf,
-          },
-        ];
-      }),
+      return [
+        key,
+        {
+          documentId: legacy.documentId,
+          filename: legacy.filename ?? legacy.documentName ?? "Unknown document",
+          contentHash: legacy.contentHash,
+          chunkIds: legacy.chunkIds,
+          fileSize: legacy.fileSize,
+          totalPages: legacy.totalPages,
+          indexedAt: legacy.indexedAt,
+          hasPdf: legacy.hasPdf,
+        },
+      ];
+    }),
   );
 }
 
@@ -138,33 +150,17 @@ async function pathExists(filePath: string): Promise<boolean> {
 }
 
 /**
- * Persist chunks as NDJSON — one compact JSON object per line.
- * Never JSON.stringify the entire chunk array (that caused RangeError on large stores).
+ * Persist chunks as NDJSON — one compact JSON object per line, via a unique
+ * temp file + rename after the write handle is fully closed.
  */
 async function writeChunksNdjson(chunks: StoredDocumentChunk[]): Promise<void> {
   await mkdir(STORE_DIR, { recursive: true });
 
-  const stream = createWriteStream(CHUNKS_TEMP_FILE, { encoding: "utf8" });
-
-  try {
+  await writeFileAtomically(CHUNKS_FILE, async (writeLine) => {
     for (const chunk of chunks) {
-      const line = `${JSON.stringify(chunk)}\n`;
-      if (!stream.write(line)) {
-        await new Promise<void>((resolve, reject) => {
-          stream.once("drain", resolve);
-          stream.once("error", reject);
-        });
-      }
+      await writeLine(`${JSON.stringify(chunk)}\n`);
     }
-
-    stream.end();
-    await finished(stream);
-    await rename(CHUNKS_TEMP_FILE, CHUNKS_FILE);
-  } catch (error) {
-    stream.destroy();
-    await unlink(CHUNKS_TEMP_FILE).catch(() => undefined);
-    throw error;
-  }
+  });
 }
 
 async function readChunksNdjson(): Promise<StoredDocumentChunk[]> {
@@ -202,7 +198,18 @@ async function writeMeta(documents: Record<string, DocumentRecord>): Promise<voi
 
   await mkdir(STORE_DIR, { recursive: true });
   // Meta is tiny (document records only) — safe to stringify.
-  await writeFile(META_FILE, JSON.stringify(meta, null, 2), "utf8");
+  const tempPath = path.join(
+    STORE_DIR,
+    `rag-meta.${process.pid}.${Date.now()}.tmp`,
+  );
+
+  try {
+    await writeFile(tempPath, JSON.stringify(meta, null, 2), "utf8");
+    await renameWithRetry(tempPath, META_FILE, { label: "rag-meta.json" });
+  } catch (error) {
+    await unlink(tempPath).catch(() => undefined);
+    throw error;
+  }
 }
 
 async function readMeta(): Promise<Record<string, DocumentRecord>> {
@@ -236,8 +243,6 @@ async function migrateLegacyStoreIfNeeded(): Promise<VectorStoreSnapshot | null>
   }
 
   const fileStat = await stat(LEGACY_STORE_FILE);
-  // Stay well below V8's max string length; pretty-printed embedding dumps
-  // near this size are unsafe to load via readFile/JSON.parse.
   const maxSafeBytes = Math.min(
     Math.floor(MAX_STRING_LENGTH * 0.5),
     200 * 1024 * 1024,
@@ -274,16 +279,21 @@ export class VectorStore {
   private snapshot: VectorStoreSnapshot | null = null;
   private bm25Index: BM25Index | null = null;
   private bm25Signature = "";
+  /** Ensures only one disk write (and snapshot mutation) runs at a time. */
+  private readonly writeLock = new AsyncMutex();
 
-  private async loadSnapshot(): Promise<VectorStoreSnapshot> {
+  private async loadSnapshotUnlocked(): Promise<VectorStoreSnapshot> {
     if (this.snapshot) {
       return this.snapshot;
     }
+
+    console.info("[RAG] Opening storage...");
 
     try {
       const migrated = await migrateLegacyStoreIfNeeded();
       if (migrated) {
         this.snapshot = migrated;
+        console.info("[RAG] Storage ready.");
         return this.snapshot;
       }
 
@@ -291,30 +301,71 @@ export class VectorStore {
         const documents = await readMeta();
         const chunks = await readChunksNdjson();
         this.snapshot = { documents, chunks };
+        console.info("[RAG] Storage ready.");
         return this.snapshot;
       }
 
       this.snapshot = createEmptySnapshot();
+      console.info("[RAG] Storage ready.");
       return this.snapshot;
     } catch (error) {
       console.error("[RAG:store] Failed to load vector store:", error);
       this.snapshot = createEmptySnapshot();
+      console.info("[RAG] Storage ready.");
       return this.snapshot;
     }
   }
 
-  private async persistSnapshot(snapshot: VectorStoreSnapshot): Promise<void> {
-    await writeMeta(snapshot.documents);
-    await writeChunksNdjson(snapshot.chunks);
+  private async loadSnapshot(): Promise<VectorStoreSnapshot> {
+    // Reads of the in-memory snapshot are lock-free after first load.
+    // Initial load is serialized through the write lock so it cannot race a writer.
+    if (this.snapshot) {
+      return this.snapshot;
+    }
 
-    // Ensure legacy monolithic file cannot grow again.
+    return this.writeLock.runExclusive(() => this.loadSnapshotUnlocked());
+  }
+
+  /**
+   * Persist a cloned snapshot. On failure the previous in-memory snapshot
+   * (and on-disk files) are left unchanged.
+   */
+  private async persistSnapshot(next: VectorStoreSnapshot): Promise<void> {
+    await writeMeta(next.documents);
+    await writeChunksNdjson(next.chunks);
+
     if (await pathExists(LEGACY_STORE_FILE)) {
       await unlink(LEGACY_STORE_FILE).catch(() => undefined);
     }
 
-    this.snapshot = snapshot;
+    this.snapshot = next;
     this.bm25Index = null;
     this.bm25Signature = "";
+    console.info("[RAG] Storage ready.");
+  }
+
+  private async mutateExclusive(
+    mutate: (draft: VectorStoreSnapshot) => void | Promise<void>,
+  ): Promise<void> {
+    await this.writeLock.runExclusive(async () => {
+      const current = await this.loadSnapshotUnlocked();
+      const draft = cloneSnapshot(current);
+
+      try {
+        await mutate(draft);
+        await this.persistSnapshot(draft);
+      } catch (error) {
+        // Keep previous index intact — do not assign draft to this.snapshot.
+        if (error instanceof StorageWriteError) {
+          throw error;
+        }
+
+        throw new StorageWriteError(
+          "Unable to update local document storage. Please try again in a moment.",
+          { cause: error },
+        );
+      }
+    });
   }
 
   async getDocumentRecord(
@@ -342,20 +393,19 @@ export class VectorStore {
     documentId: string,
     patch: Partial<DocumentRecord>,
   ): Promise<void> {
-    const snapshot = await this.loadSnapshot();
-    const existing = snapshot.documents[documentId];
+    await this.mutateExclusive((draft) => {
+      const existing = draft.documents[documentId];
 
-    if (!existing) {
-      return;
-    }
+      if (!existing) {
+        return;
+      }
 
-    snapshot.documents[documentId] = {
-      ...existing,
-      ...patch,
-      documentId,
-    };
-
-    await this.persistSnapshot(snapshot);
+      draft.documents[documentId] = {
+        ...existing,
+        ...patch,
+        documentId,
+      };
+    });
   }
 
   async insertChunks(
@@ -364,60 +414,64 @@ export class VectorStore {
     contentHash: string,
     chunks: StoredDocumentChunk[],
     meta?: DocumentRecordInput,
+    signal?: AbortSignal,
   ): Promise<void> {
-    const snapshot = await this.loadSnapshot();
-    const existing = snapshot.documents[documentId];
+    await this.mutateExclusive((draft) => {
+      // Re-check after acquiring the write lock so a delete/cancel that won
+      // the race cannot be overwritten by a stale index write.
+      assertNotCancelled(signal);
 
-    if (existing?.contentHash === contentHash) {
-      if (meta) {
-        snapshot.documents[documentId] = {
-          ...existing,
-          ...meta,
-          filename: filename || existing.filename,
-        };
-        await this.persistSnapshot(snapshot);
+      const existing = draft.documents[documentId];
+
+      if (existing?.contentHash === contentHash) {
+        if (meta) {
+          draft.documents[documentId] = {
+            ...existing,
+            ...meta,
+            filename: filename || existing.filename,
+          };
+        }
+        return;
       }
-      return;
-    }
 
-    if (existing) {
-      snapshot.chunks = snapshot.chunks.filter(
-        (chunk) => chunk.documentId !== documentId,
-      );
-    }
+      if (existing) {
+        draft.chunks = draft.chunks.filter(
+          (chunk) => chunk.documentId !== documentId,
+        );
+      }
 
-    snapshot.chunks.push(...chunks);
-    snapshot.documents[documentId] = {
-      documentId,
-      filename,
-      contentHash,
-      chunkIds: chunks.map((chunk) => chunk.id),
-      fileSize: meta?.fileSize ?? existing?.fileSize,
-      totalPages: meta?.totalPages ?? existing?.totalPages,
-      indexedAt: meta?.indexedAt ?? new Date().toISOString(),
-      hasPdf: meta?.hasPdf ?? existing?.hasPdf,
-    };
-
-    await this.persistSnapshot(snapshot);
+      draft.chunks.push(...chunks);
+      draft.documents[documentId] = {
+        documentId,
+        filename,
+        contentHash,
+        chunkIds: chunks.map((chunk) => chunk.id),
+        fileSize: meta?.fileSize ?? existing?.fileSize,
+        totalPages: meta?.totalPages ?? existing?.totalPages,
+        indexedAt: meta?.indexedAt ?? new Date().toISOString(),
+        hasPdf: meta?.hasPdf ?? existing?.hasPdf,
+      };
+    });
   }
 
   async deleteDocument(documentId: string): Promise<void> {
-    const snapshot = await this.loadSnapshot();
+    await this.mutateExclusive((draft) => {
+      if (!draft.documents[documentId]) {
+        return;
+      }
 
-    if (!snapshot.documents[documentId]) {
-      return;
-    }
-
-    delete snapshot.documents[documentId];
-    snapshot.chunks = snapshot.chunks.filter(
-      (chunk) => chunk.documentId !== documentId,
-    );
-
-    await this.persistSnapshot(snapshot);
+      delete draft.documents[documentId];
+      draft.chunks = draft.chunks.filter(
+        (chunk) => chunk.documentId !== documentId,
+      );
+    });
   }
 
   async rebuild(): Promise<void> {
-    await this.persistSnapshot(createEmptySnapshot());
+    await this.mutateExclusive((draft) => {
+      draft.chunks = [];
+      draft.documents = {};
+    });
   }
 
   async similaritySearch(
@@ -522,3 +576,5 @@ export async function resetVectorStoreForTests(): Promise<void> {
   vectorStore = new VectorStore();
   await vectorStore.rebuild();
 }
+
+export { StorageWriteError };

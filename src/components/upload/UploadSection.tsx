@@ -408,6 +408,10 @@ export function UploadSection() {
           return;
         }
 
+        if (message.toLowerCase().includes("local document storage")) {
+          setToastMessage(message);
+        }
+
         indexedHashesRef.current.delete(documentId);
 
         const [serverStatus] = await fetchDocumentIndexStatuses([documentId]);

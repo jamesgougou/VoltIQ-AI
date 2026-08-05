@@ -21,7 +21,7 @@ import {
   saveLibraryExtracted,
 } from "@/lib/rag/libraryStore";
 import { ragDebug, ragError, ragLog } from "@/lib/rag/logger";
-import { getVectorStore } from "@/lib/rag/store";
+import { getVectorStore, StorageWriteError } from "@/lib/rag/store";
 import type {
   DocumentIndexState,
   IndexDocumentRequest,
@@ -383,6 +383,7 @@ export async function indexDocument(
         indexedAt,
         hasPdf,
       },
+      signal,
     );
 
     await saveLibraryExtracted({
@@ -425,11 +426,23 @@ export async function indexDocument(
       throw new IndexCancelledError();
     }
 
+    // Keep any previous successful index intact on failure (no half-written replace).
+    if (error instanceof StorageWriteError) {
+      ragError("failed", `Storage update failed for ${documentName}: ${error.message}`, error);
+
+      await statusStore.setStatus(documentId, documentName, "failed", {
+        error: error.message,
+        stage: "failed",
+      });
+
+      throw new RetrievalError(error.message);
+    }
+
     const message = formatEmbeddingError(error);
 
     ragError("failed", `Indexing failed for ${documentName}: ${message}`, error);
 
-    await vectorStore.deleteDocument(documentId);
+    // Do not deleteDocument here — a failed re-index must keep the previous vectors.
     await statusStore.setStatus(documentId, documentName, "failed", {
       error: message,
       stage: "failed",
@@ -440,6 +453,7 @@ export async function indexDocument(
 }
 
 export async function cancelIndexedDocument(documentId: string): Promise<void> {
+  // Always cancel in-flight indexing before mutating storage.
   cancelIndexOperation(documentId);
   await getVectorStore().deleteDocument(documentId);
   await getIndexStatusStore().removeStatus(documentId);
@@ -448,6 +462,8 @@ export async function cancelIndexedDocument(documentId: string): Promise<void> {
 }
 
 export async function deleteIndexedDocument(documentId: string): Promise<void> {
+  // Deleting while indexing must cancel first so both never write concurrently.
+  cancelIndexOperation(documentId);
   await getVectorStore().deleteDocument(documentId);
   await getIndexStatusStore().removeStatus(documentId);
   await deleteLibraryDocument(documentId);
