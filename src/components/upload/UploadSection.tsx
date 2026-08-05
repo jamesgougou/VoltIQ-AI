@@ -10,15 +10,24 @@ import {
   deleteDocumentFromRag,
   fetchDocumentIndexStatuses,
   hashDocumentContent,
+  hashFileBytes,
   indexDocumentInRag,
   mergeIndexStates,
   pollIndexProgress,
 } from "@/lib/rag/client";
 import {
+  createLibraryPdfBlobUrl,
+  fetchDocumentLibrary,
+  fetchLibraryDocument,
+  lookupLibraryByHash,
+  uploadLibraryPdf,
+} from "@/lib/rag/libraryClient";
+import {
   clearPdfDocumentCache,
   destroyCachedPdfDocument,
 } from "@/lib/pdf/pdfDocumentCache";
 import { isAnyDocumentIndexing } from "@/lib/rag/indexProgress";
+import { usePDFViewer } from "@/components/PDFViewer";
 import { DocumentIndexProgressCard } from "@/components/upload/DocumentIndexProgressCard";
 import { ImageUploadManager } from "@/components/upload/ImageUploadManager";
 import { IndexingToast } from "@/components/upload/IndexingToast";
@@ -28,6 +37,39 @@ import type { DocumentContextItem } from "@/types/documentContext";
 import type { PdfDocument, PdfParseResult, PdfSourceRef } from "@/types/pdf";
 import type { DocumentIndexState } from "@/types/rag";
 import { PASTED_TEXT_DOCUMENT_ID } from "@/types/rag";
+
+function DocumentLibraryPanel({
+  pdfs,
+  indexStates,
+  onAdd,
+  onRemove,
+  onRetry,
+  onCancel,
+  onParseCancelled,
+}: {
+  pdfs: PdfDocument[];
+  indexStates: Record<string, DocumentIndexState>;
+  onAdd: (result: PdfParseResult, file: File) => void | Promise<void>;
+  onRemove: (id: string) => void;
+  onRetry: (documentId: string) => void;
+  onCancel: (documentId: string) => void;
+  onParseCancelled: () => void;
+}) {
+  const { openDocument } = usePDFViewer();
+
+  return (
+    <PdfUploadManager
+      pdfs={pdfs}
+      indexStates={indexStates}
+      onAdd={onAdd}
+      onRemove={onRemove}
+      onOpen={(id) => openDocument(id)}
+      onRetry={onRetry}
+      onCancel={onCancel}
+      onParseCancelled={onParseCancelled}
+    />
+  );
+}
 
 export function UploadSection() {
   const [pdfs, setPdfs] = useState<PdfDocument[]>([]);
@@ -47,6 +89,8 @@ export function UploadSection() {
   );
   const cancelledDocumentIdsRef = useRef<Set<string>>(new Set());
   const cancelledPastedTextHashRef = useRef<string | null>(null);
+  const [libraryReady, setLibraryReady] = useState(false);
+  const skipAutoIndexIdsRef = useRef<Set<string>>(new Set());
 
   function updateIndexState(state: DocumentIndexState) {
     setIndexStates((current) => ({
@@ -55,21 +99,96 @@ export function UploadSection() {
     }));
   }
 
-  function handlePdfAdd(result: PdfParseResult) {
+  async function handlePdfAdd(result: PdfParseResult, file: File) {
     const blobUrl = result.blobUrl;
     if (!blobUrl) {
       console.error("PDF upload is missing blobUrl; viewer will be unavailable.");
       return;
     }
 
+    const fileHash = await hashFileBytes(file);
+    const textHash = await hashDocumentContent(result.text);
+
+    // Prefer file SHA-256; fall back to text hash for legacy indexes.
+    const fileMatch = await lookupLibraryByHash(fileHash);
+    const textMatch = fileMatch.found
+      ? fileMatch
+      : await lookupLibraryByHash(textHash);
+    const existing = fileMatch.found ? fileMatch : textMatch;
+    const contentHash = existing.found
+      ? (existing.contentHash ?? fileHash)
+      : fileHash;
+
+    if (existing.found && existing.documentId && existing.status === "ready") {
+      if (pdfs.some((pdf) => pdf.id === existing.documentId)) {
+        URL.revokeObjectURL(blobUrl);
+        setToastMessage(
+          `${existing.filename ?? result.fileName} is already in your library.`,
+        );
+        return;
+      }
+
+      const detail = await fetchLibraryDocument(existing.documentId);
+      const persistedBlobUrl =
+        (await createLibraryPdfBlobUrl(existing.documentId)) ?? blobUrl;
+
+      if (persistedBlobUrl !== blobUrl) {
+        URL.revokeObjectURL(blobUrl);
+      }
+
+      skipAutoIndexIdsRef.current.add(existing.documentId);
+      indexedHashesRef.current.set(existing.documentId, contentHash);
+
+      setPdfs((current) => [
+        ...current,
+        {
+          id: existing.documentId!,
+          fileName: detail?.filename ?? existing.filename ?? result.fileName,
+          fileSize: detail?.fileSize ?? existing.fileSize ?? result.fileSize,
+          totalPages:
+            detail?.totalPages ?? existing.totalPages ?? result.totalPages,
+          text: detail?.text ?? result.text,
+          pages: detail?.pages ?? result.pages,
+          blobUrl: persistedBlobUrl,
+          contentHash,
+          indexedAt: detail?.indexedAt ?? existing.indexedAt,
+        },
+      ]);
+
+      updateIndexState({
+        documentId: existing.documentId,
+        filename: existing.filename ?? result.fileName,
+        status: "ready",
+        stage: "ready",
+        chunkCount: existing.chunkCount,
+        totalChunks: existing.chunkCount,
+        progressPercent: 100,
+        updatedAt: new Date().toISOString(),
+      });
+
+      setToastMessage(
+        `${existing.filename ?? result.fileName} loaded from library (no re-index).`,
+      );
+      return;
+    }
+
+    const documentId = crypto.randomUUID();
+
     setPdfs((current) => [
       ...current,
       {
         ...result,
         blobUrl,
-        id: crypto.randomUUID(),
+        id: documentId,
+        contentHash,
       },
     ]);
+
+    try {
+      await uploadLibraryPdf(documentId, file);
+    } catch (error) {
+      console.error("Failed to persist PDF bytes:", error);
+    }
   }
 
   function handlePdfRemove(id: string) {
@@ -155,8 +274,18 @@ export function UploadSection() {
       documentName: string,
       text: string,
       pages?: PdfParseResult["pages"],
+      options?: {
+        contentHash?: string;
+        fileSize?: number;
+        totalPages?: number;
+      },
     ) => {
       if (indexingInFlightRef.current.has(documentId)) {
+        return;
+      }
+
+      if (skipAutoIndexIdsRef.current.has(documentId)) {
+        skipAutoIndexIdsRef.current.delete(documentId);
         return;
       }
 
@@ -176,7 +305,8 @@ export function UploadSection() {
       );
 
       try {
-        const contentHash = await hashDocumentContent(text);
+        const contentHash =
+          options?.contentHash ?? (await hashDocumentContent(text));
 
         if (indexedHashesRef.current.get(documentId) === contentHash) {
           const statuses = await fetchDocumentIndexStatuses([documentId]);
@@ -199,6 +329,8 @@ export function UploadSection() {
             text,
             pages,
             contentHash,
+            fileSize: options?.fileSize,
+            totalPages: options?.totalPages,
           },
           fetchController.signal,
         );
@@ -207,8 +339,32 @@ export function UploadSection() {
           return;
         }
 
+        // Server may reuse an existing documentId for identical content.
+        const resolvedId = result.documentId;
+
+        if (resolvedId !== documentId) {
+          setPdfs((current) =>
+            current.map((pdf) =>
+              pdf.id === documentId
+                ? {
+                    ...pdf,
+                    id: resolvedId,
+                    contentHash,
+                    indexedAt: new Date().toISOString(),
+                  }
+                : pdf,
+            ),
+          );
+          setIndexStates((current) => {
+            const next = { ...current };
+            delete next[documentId];
+            return next;
+          });
+          indexedHashesRef.current.delete(documentId);
+        }
+
         updateIndexState({
-          documentId,
+          documentId: resolvedId,
           filename: documentName,
           status: result.status,
           stage: result.status === "ready" ? "ready" : "failed",
@@ -221,9 +377,22 @@ export function UploadSection() {
         });
 
         if (result.status === "ready") {
-          indexedHashesRef.current.set(documentId, contentHash);
+          indexedHashesRef.current.set(resolvedId, contentHash);
+          setPdfs((current) =>
+            current.map((pdf) =>
+              pdf.id === resolvedId
+                ? { ...pdf, contentHash, indexedAt: new Date().toISOString() }
+                : pdf,
+            ),
+          );
+
+          if (result.skipped || result.reusedExisting) {
+            setToastMessage(
+              `${documentName} already indexed — reused existing vectors.`,
+            );
+          }
         } else {
-          indexedHashesRef.current.delete(documentId);
+          indexedHashesRef.current.delete(resolvedId);
         }
       } catch (error) {
         if (cancelledDocumentIdsRef.current.has(documentId)) {
@@ -286,7 +455,12 @@ export function UploadSection() {
       const pdf = pdfs.find((item) => item.id === documentId);
 
       if (pdf) {
-        void indexDocumentEntry(pdf.id, pdf.fileName, pdf.text, pdf.pages);
+        skipAutoIndexIdsRef.current.delete(pdf.id);
+        void indexDocumentEntry(pdf.id, pdf.fileName, pdf.text, pdf.pages, {
+          contentHash: pdf.contentHash,
+          fileSize: pdf.fileSize,
+          totalPages: pdf.totalPages,
+        });
         return;
       }
 
@@ -345,7 +519,106 @@ export function UploadSection() {
   useEffect(() => {
     let cancelled = false;
 
+    async function hydrateLibrary() {
+      try {
+        const documents = await fetchDocumentLibrary();
+        if (cancelled) {
+          return;
+        }
+
+        if (documents.length === 0) {
+          setLibraryReady(true);
+          return;
+        }
+
+        const hydrated: PdfDocument[] = [];
+        const nextStates: Record<string, DocumentIndexState> = {};
+
+        for (const document of documents) {
+          if (document.documentId === PASTED_TEXT_DOCUMENT_ID) {
+            continue;
+          }
+
+          const detail = await fetchLibraryDocument(document.documentId);
+          const blobUrl = await createLibraryPdfBlobUrl(document.documentId);
+
+          skipAutoIndexIdsRef.current.add(document.documentId);
+          indexedHashesRef.current.set(
+            document.documentId,
+            document.contentHash,
+          );
+
+          hydrated.push({
+            id: document.documentId,
+            fileName: document.filename,
+            fileSize: document.fileSize,
+            totalPages: document.totalPages,
+            text:
+              detail?.text ||
+              (document.status === "ready"
+                ? "[Indexed document — content available via retrieval]"
+                : ""),
+            pages: detail?.pages ?? [],
+            blobUrl:
+              blobUrl ??
+              URL.createObjectURL(new Blob([], { type: "application/pdf" })),
+            contentHash: document.contentHash,
+            indexedAt: document.indexedAt,
+          });
+
+          nextStates[document.documentId] = {
+            documentId: document.documentId,
+            filename: document.filename,
+            status: document.status,
+            stage:
+              document.stage ??
+              (document.status === "ready" ? "ready" : undefined),
+            chunkCount: document.chunkCount,
+            totalChunks: document.chunkCount,
+            progressPercent: document.status === "ready" ? 100 : 0,
+            error: document.error,
+            updatedAt: document.indexedAt || new Date().toISOString(),
+          };
+        }
+
+        if (cancelled) {
+          return;
+        }
+
+        if (hydrated.length > 0) {
+          setPdfs((current) => {
+            const existingIds = new Set(current.map((pdf) => pdf.id));
+            const mergedLibrary = hydrated.filter(
+              (pdf) => !existingIds.has(pdf.id),
+            );
+            return [...mergedLibrary, ...current];
+          });
+          setIndexStates((current) => ({ ...nextStates, ...current }));
+        }
+      } catch (error) {
+        console.error("Failed to hydrate document library:", error);
+      } finally {
+        if (!cancelled) {
+          setLibraryReady(true);
+        }
+      }
+    }
+
+    void hydrateLibrary();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
     async function syncPdfIndexes() {
+      if (!libraryReady) {
+        return;
+      }
+
       const currentIds = new Set(pdfs.map((pdf) => pdf.id));
 
       for (const documentId of [...indexedHashesRef.current.keys()]) {
@@ -372,7 +645,8 @@ export function UploadSection() {
           return;
         }
 
-        const contentHash = await hashDocumentContent(pdf.text);
+        const contentHash =
+          pdf.contentHash ?? (await hashDocumentContent(pdf.text));
 
         if (indexedHashesRef.current.get(pdf.id) === contentHash) {
           const statuses = await fetchDocumentIndexStatuses([pdf.id]);
@@ -387,12 +661,11 @@ export function UploadSection() {
           continue;
         }
 
-        await indexDocumentEntry(
-          pdf.id,
-          pdf.fileName,
-          pdf.text,
-          pdf.pages,
-        );
+        await indexDocumentEntry(pdf.id, pdf.fileName, pdf.text, pdf.pages, {
+          contentHash: pdf.contentHash,
+          fileSize: pdf.fileSize,
+          totalPages: pdf.totalPages,
+        });
       }
     }
 
@@ -401,7 +674,7 @@ export function UploadSection() {
     return () => {
       cancelled = true;
     };
-  }, [pdfs, indexDocumentEntry]);
+  }, [pdfs, indexDocumentEntry, libraryReady]);
 
   useEffect(() => {
     let cancelled = false;
@@ -548,7 +821,7 @@ export function UploadSection() {
           </div>
 
           <div className="grid gap-3 p-3 sm:p-4 lg:grid-cols-3">
-            <PdfUploadManager
+            <DocumentLibraryPanel
               key={`pdf-${resetKey}`}
               pdfs={pdfs}
               indexStates={indexStates}

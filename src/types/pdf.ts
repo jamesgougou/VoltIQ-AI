@@ -13,6 +13,8 @@ export type PdfParseResult = {
 export type PdfDocument = PdfParseResult & {
   id: string;
   blobUrl: string;
+  contentHash?: string;
+  indexedAt?: string;
 };
 
 /** Lightweight registry entry used by the interactive PDF viewer. */

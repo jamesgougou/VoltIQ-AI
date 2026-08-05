@@ -16,6 +16,8 @@ export function buildIndexRequest(input: {
   text: string;
   pages?: PdfPageText[];
   contentHash: string;
+  fileSize?: number;
+  totalPages?: number;
 }): IndexDocumentRequest {
   const hasPages = Boolean(input.pages?.length);
 
@@ -25,20 +27,32 @@ export function buildIndexRequest(input: {
     contentHash: input.contentHash,
     pages: hasPages ? input.pages : undefined,
     text: hasPages ? "" : input.text,
+    fileSize: input.fileSize,
+    totalPages: input.totalPages,
   };
 }
 
-export async function hashDocumentContent(content: string): Promise<string> {
-  const encoded = new TextEncoder().encode(content);
-
+async function sha256Hex(data: BufferSource): Promise<string> {
   if (typeof crypto !== "undefined" && crypto.subtle) {
-    const digest = await crypto.subtle.digest("SHA-256", encoded);
+    const digest = await crypto.subtle.digest("SHA-256", data);
     return Array.from(new Uint8Array(digest))
       .map((byte) => byte.toString(16).padStart(2, "0"))
       .join("");
   }
 
-  return `${content.length}:${content.slice(0, 128)}`;
+  const byteLength =
+    "byteLength" in data ? data.byteLength : new Uint8Array(data as ArrayBuffer).byteLength;
+  return `len:${byteLength}`;
+}
+
+/** SHA-256 of extracted document text (legacy / pasted text). */
+export async function hashDocumentContent(content: string): Promise<string> {
+  return sha256Hex(new TextEncoder().encode(content));
+}
+
+/** SHA-256 of the original file bytes — preferred duplicate key for PDFs. */
+export async function hashFileBytes(file: Blob): Promise<string> {
+  return sha256Hex(await file.arrayBuffer());
 }
 
 export function createClientIndexState(

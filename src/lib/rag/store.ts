@@ -16,11 +16,22 @@ import type { RetrievedChunk, StoredDocumentChunk } from "@/lib/rag/types";
 
 const MAX_STRING_LENGTH = bufferConstants.MAX_STRING_LENGTH;
 
-type DocumentRecord = {
+export type DocumentRecord = {
   documentId: string;
   filename: string;
   contentHash: string;
   chunkIds: string[];
+  fileSize?: number;
+  totalPages?: number;
+  indexedAt?: string;
+  hasPdf?: boolean;
+};
+
+export type DocumentRecordInput = {
+  fileSize?: number;
+  totalPages?: number;
+  indexedAt?: string;
+  hasPdf?: boolean;
 };
 
 type VectorStoreSnapshot = {
@@ -93,16 +104,20 @@ function migrateDocuments(
     Object.entries(documents).map(([key, record]) => {
       const legacy = record as DocumentRecord & { documentName?: string };
 
-      return [
-        key,
-        {
-          documentId: legacy.documentId,
-          filename: legacy.filename ?? legacy.documentName ?? "Unknown document",
-          contentHash: legacy.contentHash,
-          chunkIds: legacy.chunkIds,
-        },
-      ];
-    }),
+        return [
+          key,
+          {
+            documentId: legacy.documentId,
+            filename: legacy.filename ?? legacy.documentName ?? "Unknown document",
+            contentHash: legacy.contentHash,
+            chunkIds: legacy.chunkIds,
+            fileSize: legacy.fileSize,
+            totalPages: legacy.totalPages,
+            indexedAt: legacy.indexedAt,
+            hasPdf: legacy.hasPdf,
+          },
+        ];
+      }),
   );
 }
 
@@ -309,16 +324,59 @@ export class VectorStore {
     return snapshot.documents[documentId];
   }
 
+  async listDocumentRecords(): Promise<DocumentRecord[]> {
+    const snapshot = await this.loadSnapshot();
+    return Object.values(snapshot.documents);
+  }
+
+  async findDocumentByContentHash(
+    contentHash: string,
+  ): Promise<DocumentRecord | undefined> {
+    const snapshot = await this.loadSnapshot();
+    return Object.values(snapshot.documents).find(
+      (record) => record.contentHash === contentHash,
+    );
+  }
+
+  async updateDocumentRecord(
+    documentId: string,
+    patch: Partial<DocumentRecord>,
+  ): Promise<void> {
+    const snapshot = await this.loadSnapshot();
+    const existing = snapshot.documents[documentId];
+
+    if (!existing) {
+      return;
+    }
+
+    snapshot.documents[documentId] = {
+      ...existing,
+      ...patch,
+      documentId,
+    };
+
+    await this.persistSnapshot(snapshot);
+  }
+
   async insertChunks(
     documentId: string,
     filename: string,
     contentHash: string,
     chunks: StoredDocumentChunk[],
+    meta?: DocumentRecordInput,
   ): Promise<void> {
     const snapshot = await this.loadSnapshot();
     const existing = snapshot.documents[documentId];
 
     if (existing?.contentHash === contentHash) {
+      if (meta) {
+        snapshot.documents[documentId] = {
+          ...existing,
+          ...meta,
+          filename: filename || existing.filename,
+        };
+        await this.persistSnapshot(snapshot);
+      }
       return;
     }
 
@@ -334,6 +392,10 @@ export class VectorStore {
       filename,
       contentHash,
       chunkIds: chunks.map((chunk) => chunk.id),
+      fileSize: meta?.fileSize ?? existing?.fileSize,
+      totalPages: meta?.totalPages ?? existing?.totalPages,
+      indexedAt: meta?.indexedAt ?? new Date().toISOString(),
+      hasPdf: meta?.hasPdf ?? existing?.hasPdf,
     };
 
     await this.persistSnapshot(snapshot);

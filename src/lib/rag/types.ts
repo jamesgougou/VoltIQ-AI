@@ -64,6 +64,8 @@ export type IndexDocumentRequest = {
   text: string;
   pages?: PdfPageText[];
   contentHash: string;
+  fileSize?: number;
+  totalPages?: number;
 };
 
 export type IndexDocumentResult = {
@@ -72,6 +74,22 @@ export type IndexDocumentResult = {
   skipped: boolean;
   status: DocumentIndexStatus;
   error?: string;
+  /** True when an identical contentHash already existed under another/same id. */
+  reusedExisting?: boolean;
+};
+
+export type LibraryDocumentSummary = {
+  documentId: string;
+  filename: string;
+  contentHash: string;
+  fileSize: number;
+  totalPages: number;
+  indexedAt: string;
+  hasPdf: boolean;
+  status: DocumentIndexStatus;
+  chunkCount?: number;
+  error?: string;
+  stage?: IndexStage;
 };
 
 export const PASTED_TEXT_DOCUMENT_ID = "pasted-text";

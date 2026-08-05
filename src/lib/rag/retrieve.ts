@@ -12,12 +12,21 @@ import {
   isCancellationError,
 } from "@/lib/rag/indexCancellation";
 import { getIndexStatusStore } from "@/lib/rag/indexStatus";
+import {
+  clearLibraryDocuments,
+  deleteLibraryDocument,
+  getLibraryDocument,
+  libraryHasPdf,
+  listLibraryDocumentIds,
+  saveLibraryExtracted,
+} from "@/lib/rag/libraryStore";
 import { ragDebug, ragError, ragLog } from "@/lib/rag/logger";
 import { getVectorStore } from "@/lib/rag/store";
 import type {
   DocumentIndexState,
   IndexDocumentRequest,
   IndexDocumentResult,
+  LibraryDocumentSummary,
   RetrievedChunk,
   StoredDocumentChunk,
 } from "@/lib/rag/types";
@@ -151,29 +160,83 @@ export async function indexDocument(
     });
   }
 
-  const existing = await vectorStore.getDocumentRecord(documentId);
+  const existingById = await vectorStore.getDocumentRecord(documentId);
+  const existingByHash =
+    await vectorStore.findDocumentByContentHash(contentHash);
+  const reusable =
+    existingById?.contentHash === contentHash
+      ? existingById
+      : existingByHash;
 
-  if (existing?.contentHash === contentHash) {
-    const storedChunkCount = await vectorStore.getStoredChunkCount(documentId);
-    await vectorStore.verifyDocumentStorage(documentId, storedChunkCount);
+  if (reusable) {
+    try {
+      const storedChunkCount = await vectorStore.getStoredChunkCount(
+        reusable.documentId,
+      );
+      await vectorStore.verifyDocumentStorage(
+        reusable.documentId,
+        storedChunkCount,
+      );
 
-    await statusStore.setStatus(documentId, documentName, "ready", {
-      chunkCount: storedChunkCount,
-      stage: "ready",
-      totalChunks: storedChunkCount,
-    });
+      await statusStore.setStatus(
+        reusable.documentId,
+        reusable.filename || documentName,
+        "ready",
+        {
+          chunkCount: storedChunkCount,
+          stage: "ready",
+          totalChunks: storedChunkCount,
+        },
+      );
 
-    ragLog(
-      "ready",
-      `Marking document READY: ${documentName} (skipped, already indexed, ${storedChunkCount} chunks).`,
-    );
+      const existingLibrary = await getLibraryDocument(reusable.documentId);
+      const reusePages =
+        request.pages?.length ? request.pages : (existingLibrary?.pages ?? []);
+      const reuseText =
+        text ||
+        existingLibrary?.text ||
+        reusePages
+          .map((page) => page.text)
+          .filter(Boolean)
+          .join("\n\n");
 
-    return {
-      documentId,
-      chunkCount: storedChunkCount,
-      skipped: true,
-      status: "ready",
-    };
+      await saveLibraryExtracted({
+        documentId: reusable.documentId,
+        filename: reusable.filename || documentName,
+        contentHash,
+        fileSize: request.fileSize ?? reusable.fileSize ?? 0,
+        totalPages:
+          request.totalPages ?? reusable.totalPages ?? extractedPageCount,
+        indexedAt: reusable.indexedAt ?? new Date().toISOString(),
+        text: reuseText,
+        pages: reusePages,
+      });
+
+      await vectorStore.updateDocumentRecord(reusable.documentId, {
+        fileSize: request.fileSize ?? reusable.fileSize,
+        totalPages:
+          request.totalPages ?? reusable.totalPages ?? extractedPageCount,
+        hasPdf: await libraryHasPdf(reusable.documentId),
+      });
+
+      ragLog(
+        "ready",
+        `Reusing existing index for ${documentName}: ${reusable.documentId} (${storedChunkCount} chunks, no re-embed).`,
+      );
+
+      return {
+        documentId: reusable.documentId,
+        chunkCount: storedChunkCount,
+        skipped: true,
+        reusedExisting: reusable.documentId !== documentId,
+        status: "ready",
+      };
+    } catch {
+      ragLog(
+        "store",
+        `Existing index for hash ${contentHash.slice(0, 8)}… failed verification; re-indexing.`,
+      );
+    }
   }
 
   await statusStore.setStatus(documentId, documentName, "indexing", {
@@ -298,12 +361,40 @@ export async function indexDocument(
       `Saving embeddings for ${documentName}: ${storedChunks.length} chunks.`,
     );
 
+    const indexedAt = new Date().toISOString();
+    const hasPdf = await libraryHasPdf(documentId);
+    const pages = request.pages ?? [];
+    // Persist page text for session restore; avoid requiring a second full-doc join at index time.
+    const persistedText =
+      text ||
+      pages
+        .map((page) => page.text)
+        .filter(Boolean)
+        .join("\n\n");
+
     await vectorStore.insertChunks(
       documentId,
       documentName,
       contentHash,
       storedChunks,
+      {
+        fileSize: request.fileSize,
+        totalPages: request.totalPages ?? extractedPageCount,
+        indexedAt,
+        hasPdf,
+      },
     );
+
+    await saveLibraryExtracted({
+      documentId,
+      filename: documentName,
+      contentHash,
+      fileSize: request.fileSize ?? 0,
+      totalPages: request.totalPages ?? extractedPageCount,
+      indexedAt,
+      text: persistedText,
+      pages,
+    });
 
     await vectorStore.verifyDocumentStorage(documentId, storedChunks.length);
 
@@ -330,6 +421,7 @@ export async function indexDocument(
       ragLog("cancel", `Indexing cancelled for ${documentName} (${documentId}).`);
       await vectorStore.deleteDocument(documentId);
       await statusStore.removeStatus(documentId);
+      await deleteLibraryDocument(documentId);
       throw new IndexCancelledError();
     }
 
@@ -351,18 +443,87 @@ export async function cancelIndexedDocument(documentId: string): Promise<void> {
   cancelIndexOperation(documentId);
   await getVectorStore().deleteDocument(documentId);
   await getIndexStatusStore().removeStatus(documentId);
+  await deleteLibraryDocument(documentId);
   ragLog("cancel", `Removed cancelled document from index: ${documentId}.`);
 }
 
 export async function deleteIndexedDocument(documentId: string): Promise<void> {
   await getVectorStore().deleteDocument(documentId);
   await getIndexStatusStore().removeStatus(documentId);
+  await deleteLibraryDocument(documentId);
 }
 
 export async function rebuildVectorIndex(): Promise<void> {
   await getVectorStore().rebuild();
   await getIndexStatusStore().clearAll();
+  await clearLibraryDocuments();
   clearEmbeddingCache();
+}
+
+export async function listLibraryDocuments(): Promise<LibraryDocumentSummary[]> {
+  const vectorStore = getVectorStore();
+  const statusStore = getIndexStatusStore();
+  const records = await vectorStore.listDocumentRecords();
+  const libraryIds = new Set(await listLibraryDocumentIds());
+  const summaries: LibraryDocumentSummary[] = [];
+  const seen = new Set<string>();
+
+  for (const record of records) {
+    seen.add(record.documentId);
+    const status = await reconcileDocumentStatus(record.documentId);
+    const libraryDoc = await getLibraryDocument(record.documentId);
+    const hasPdf =
+      record.hasPdf ?? libraryDoc?.hasPdf ?? (await libraryHasPdf(record.documentId));
+
+    summaries.push({
+      documentId: record.documentId,
+      filename: record.filename,
+      contentHash: record.contentHash,
+      fileSize: record.fileSize ?? libraryDoc?.fileSize ?? 0,
+      totalPages: record.totalPages ?? libraryDoc?.totalPages ?? 0,
+      indexedAt:
+        record.indexedAt ?? libraryDoc?.indexedAt ?? status?.updatedAt ?? "",
+      hasPdf,
+      status: status?.status ?? "failed",
+      chunkCount: status?.chunkCount ?? record.chunkIds.length,
+      error: status?.error,
+      stage: status?.stage,
+    });
+  }
+
+  // Include library folders that may not yet have vector records (edge recovery).
+  for (const documentId of libraryIds) {
+    if (seen.has(documentId)) {
+      continue;
+    }
+
+    const libraryDoc = await getLibraryDocument(documentId);
+    if (!libraryDoc) {
+      continue;
+    }
+
+    const status = await statusStore.getStatus(documentId);
+
+    summaries.push({
+      documentId,
+      filename: libraryDoc.filename,
+      contentHash: libraryDoc.contentHash,
+      fileSize: libraryDoc.fileSize,
+      totalPages: libraryDoc.totalPages,
+      indexedAt: libraryDoc.indexedAt,
+      hasPdf: libraryDoc.hasPdf,
+      status: status?.status ?? "failed",
+      chunkCount: status?.chunkCount,
+      error: status?.error,
+      stage: status?.stage,
+    });
+  }
+
+  summaries.sort((left, right) =>
+    (right.indexedAt || "").localeCompare(left.indexedAt || ""),
+  );
+
+  return summaries;
 }
 
 export async function hasIndexedContent(): Promise<boolean> {
