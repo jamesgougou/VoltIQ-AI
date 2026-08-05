@@ -1,2 +1,2 @@
 export { StudyPanel } from "./StudyPanel";
-export { StudyCard } from "./StudyCard";
+export { StudyWorkspace } from "./StudyWorkspace";

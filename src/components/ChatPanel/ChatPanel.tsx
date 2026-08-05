@@ -12,6 +12,7 @@ import {
 import type { ChatMessage } from "@/types/chat";
 import type { DocumentContextItem } from "@/types/documentContext";
 import type { DocumentIndexState } from "@/types/rag";
+import type { StudyModeId } from "@/types/study";
 import { StudyPanel } from "@/components/Study";
 import { AIToolsPanel } from "./AIToolsPanel";
 import { ChatHistory } from "./ChatHistory";
@@ -54,6 +55,7 @@ export function ChatPanel({
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [focusTrigger, setFocusTrigger] = useState(0);
+  const [studyMode, setStudyMode] = useState<StudyModeId>("idle");
   const bottomRef = useRef<HTMLDivElement>(null);
   const previousHasDocuments = useRef(hasDocuments);
   const previousIsLoading = useRef(isLoading);
@@ -264,8 +266,8 @@ export function ChatPanel({
     setInput(prompt);
   }
 
-  function handleStudySelect(prompt: string) {
-    setInput(prompt);
+  function handleTutorPrompt(prompt: string) {
+    void sendMessage(prompt);
     focusInput();
   }
 
@@ -307,9 +309,12 @@ export function ChatPanel({
       >
         <div className="border-b border-slate-100 px-4 py-3 sm:px-6">
           <StudyPanel
-            onStudySelect={handleStudySelect}
+            activeMode={studyMode}
+            onModeChange={setStudyMode}
+            documentIds={retrievalDocumentIds}
+            onSendTutorPrompt={handleTutorPrompt}
             hasDocuments={hasDocuments}
-            disabled={isLoading}
+            disabled={isLoading || indexingInProgress}
           />
         </div>
         <ChatHistory

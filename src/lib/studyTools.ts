@@ -1,47 +1,55 @@
+import type { StudyModeId } from "@/types/study";
+
 export type StudyToolIcon =
   | "questions"
   | "flashcards"
   | "explain"
-  | "exam";
+  | "exam"
+  | "progress"
+  | "history";
 
 export type StudyTool = {
-  id: string;
+  id: StudyModeId;
   title: string;
   description: string;
-  prompt: string;
   icon: StudyToolIcon;
 };
 
 export const STUDY_TOOLS: StudyTool[] = [
   {
-    id: "generate-questions",
+    id: "quiz",
     title: "Generate Questions",
-    description: "Create study questions from your uploaded documents.",
-    prompt: "Generate 20 study questions from my uploaded documents.",
+    description: "Interactive quiz with instant marking and explanations.",
     icon: "questions",
   },
   {
     id: "flashcards",
     title: "Flashcards",
-    description: "Build flashcards from key terms and definitions.",
-    prompt:
-      "Create flashcards from key terms and definitions in my uploaded documents.",
+    description: "Flip, shuffle and bookmark cards from your documents.",
     icon: "flashcards",
   },
   {
-    id: "explain-simply",
+    id: "explain",
     title: "Explain Simply",
-    description: "Get apprentice-friendly explanations of technical content.",
-    prompt:
-      "Explain the uploaded content in simple language suitable for an apprentice electrician.",
+    description: "Apprentice-friendly lessons grounded in your library.",
     icon: "explain",
   },
   {
-    id: "exam-mode",
+    id: "exam",
     title: "Exam Mode",
-    description: "Generate a mock exam from your uploaded material.",
-    prompt:
-      "Create a mock exam with 10 multiple-choice questions based on my uploaded documents.",
+    description: "Timed or untimed mock exams with scoring and review.",
     icon: "exam",
+  },
+  {
+    id: "progress",
+    title: "Progress",
+    description: "Track scores, study time and weak topics.",
+    icon: "progress",
+  },
+  {
+    id: "history",
+    title: "Study History",
+    description: "Review recent quiz and exam sessions.",
+    icon: "history",
   },
 ];
