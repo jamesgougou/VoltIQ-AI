@@ -105,9 +105,15 @@ function buildCandidates(
   });
 }
 
+export type HybridRetrieveOptions = {
+  /** When set, only chunks from these document IDs are searched. */
+  documentIds?: string[];
+};
+
 export async function hybridRetrieve(
   query: string,
   topK = TOP_K_CHUNKS,
+  options?: HybridRetrieveOptions,
 ): Promise<HybridRetrievalResult> {
   const trimmedQuery = query.trim();
   const profile = analyzeQuery(trimmedQuery);
@@ -131,14 +137,69 @@ export async function hybridRetrieve(
     };
   }
 
-  const allChunks = await vectorStore.getAllChunks();
+  // undefined = all enabled docs; [] = search nothing; [ids] = scoped search.
+  const hasExplicitScope = Array.isArray(options?.documentIds);
+  const allowedIds = hasExplicitScope
+    ? new Set(options!.documentIds)
+    : null;
+
+  // Exclude disabled documents when no explicit ID list is provided.
+  const records = await vectorStore.listDocumentRecords();
+  const enabledIds = new Set(
+    records
+      .filter((record) => record.enabled !== false)
+      .map((record) => record.documentId),
+  );
+
+  if (hasExplicitScope && allowedIds!.size === 0) {
+    return {
+      chunks: [],
+      insufficientRetrieval: true,
+      profile,
+    };
+  }
+
+  const allChunks = (await vectorStore.getAllChunks()).filter((chunk) => {
+    if (!enabledIds.has(chunk.documentId)) {
+      return false;
+    }
+
+    if (allowedIds) {
+      return allowedIds.has(chunk.documentId);
+    }
+
+    return true;
+  });
+
+  if (allChunks.length === 0) {
+    return {
+      chunks: [],
+      insufficientRetrieval: true,
+      profile,
+    };
+  }
+
   const queryEmbedding = await embedQueryCached(profile.expandedQuery);
-  const semanticResults = await vectorStore.similaritySearch(
-    queryEmbedding,
+  const semanticResults = (
+    await vectorStore.similaritySearch(queryEmbedding, CANDIDATE_POOL_SIZE)
+  ).filter((result) => {
+    if (!enabledIds.has(result.documentId)) {
+      return false;
+    }
+
+    if (allowedIds) {
+      return allowedIds.has(result.documentId);
+    }
+
+    return true;
+  });
+
+  const { buildBM25Index } = await import("@/lib/rag/bm25");
+  const scopedBm25 = buildBM25Index(allChunks);
+  const keywordResults = scopedBm25.search(
+    profile.expandedQuery,
     CANDIDATE_POOL_SIZE,
   );
-  const bm25Index = await vectorStore.getBM25Index();
-  const keywordResults = bm25Index.search(profile.expandedQuery, CANDIDATE_POOL_SIZE);
   const keywordScores = normalizeScores(keywordResults);
   const candidates = buildCandidates(
     allChunks,

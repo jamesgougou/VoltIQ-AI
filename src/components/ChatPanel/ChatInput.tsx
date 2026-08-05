@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { QuickPrompts } from "./QuickPrompts";
 
 type ChatInputProps = {
@@ -13,6 +13,8 @@ type ChatInputProps = {
   placeholder?: string;
   helperText?: string;
   focusTrigger?: number;
+  /** Retrieval scope controls rendered above the message field. */
+  scopeBar?: ReactNode;
 };
 
 export function ChatInput({
@@ -25,6 +27,7 @@ export function ChatInput({
   placeholder = "Ask anything...",
   helperText = "Enter to send · Shift+Enter for new line",
   focusTrigger = 0,
+  scopeBar,
 }: ChatInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const isLocked = disabled || inputDisabled;
@@ -60,6 +63,8 @@ export function ChatInput({
       </div>
       <div className="px-4 py-4 sm:px-6">
       <div className="mx-auto max-w-3xl space-y-3">
+        {scopeBar}
+
         {!inputDisabled && (
           <QuickPrompts
             onSelect={handlePromptSelect}

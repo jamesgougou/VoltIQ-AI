@@ -6,6 +6,11 @@ import {
   writeFileAtomically,
 } from "@/lib/rag/atomicWrite";
 import { assertNotCancelled } from "@/lib/rag/indexCancellation";
+import {
+  KNOWLEDGE_BASE_VERSION,
+  currentEmbeddingModel,
+  inferDocumentType,
+} from "@/lib/rag/libraryMeta";
 import { constants as bufferConstants } from "node:buffer";
 import { createReadStream } from "node:fs";
 import {
@@ -31,6 +36,13 @@ export type DocumentRecord = {
   totalPages?: number;
   indexedAt?: string;
   hasPdf?: boolean;
+  /** When false, document is stored but excluded from RAG retrieval. Default true. */
+  enabled?: boolean;
+  tags?: string[];
+  lastUsedAt?: string;
+  documentType?: string;
+  embeddingModel?: string;
+  knowledgeBaseVersion?: string;
 };
 
 export type DocumentRecordInput = {
@@ -38,6 +50,12 @@ export type DocumentRecordInput = {
   totalPages?: number;
   indexedAt?: string;
   hasPdf?: boolean;
+  enabled?: boolean;
+  tags?: string[];
+  lastUsedAt?: string;
+  documentType?: string;
+  embeddingModel?: string;
+  knowledgeBaseVersion?: string;
 };
 
 type VectorStoreSnapshot = {
@@ -123,13 +141,19 @@ function migrateDocuments(
           filename: legacy.filename ?? legacy.documentName ?? "Unknown document",
           contentHash: legacy.contentHash,
           chunkIds: legacy.chunkIds,
-          fileSize: legacy.fileSize,
-          totalPages: legacy.totalPages,
-          indexedAt: legacy.indexedAt,
-          hasPdf: legacy.hasPdf,
-        },
-      ];
-    }),
+            fileSize: legacy.fileSize,
+            totalPages: legacy.totalPages,
+            indexedAt: legacy.indexedAt,
+            hasPdf: legacy.hasPdf,
+            enabled: legacy.enabled ?? true,
+            tags: legacy.tags ?? [],
+            lastUsedAt: legacy.lastUsedAt,
+            documentType: legacy.documentType,
+            embeddingModel: legacy.embeddingModel,
+            knowledgeBaseVersion: legacy.knowledgeBaseVersion,
+          },
+        ];
+      }),
   );
 }
 
@@ -393,18 +417,54 @@ export class VectorStore {
     documentId: string,
     patch: Partial<DocumentRecord>,
   ): Promise<void> {
-    await this.mutateExclusive((draft) => {
-      const existing = draft.documents[documentId];
+    await this.updateDocumentRecordsMeta([{ documentId, patch }]);
+  }
 
-      if (!existing) {
+  /**
+   * Patch document metadata without rewriting the chunks NDJSON file.
+   * Used for lightweight fields like enabled/tags/lastUsedAt.
+   */
+  async updateDocumentRecordsMeta(
+    updates: Array<{ documentId: string; patch: Partial<DocumentRecord> }>,
+  ): Promise<void> {
+    if (updates.length === 0) {
+      return;
+    }
+
+    await this.writeLock.runExclusive(async () => {
+      const current = await this.loadSnapshotUnlocked();
+      const draft = cloneSnapshot(current);
+      let changed = false;
+
+      for (const { documentId, patch } of updates) {
+        const existing = draft.documents[documentId];
+        if (!existing) {
+          continue;
+        }
+
+        draft.documents[documentId] = {
+          ...existing,
+          ...patch,
+          documentId,
+        };
+        changed = true;
+      }
+
+      if (!changed) {
         return;
       }
 
-      draft.documents[documentId] = {
-        ...existing,
-        ...patch,
-        documentId,
-      };
+      try {
+        await writeMeta(draft.documents);
+        this.snapshot = draft;
+        this.bm25Index = null;
+        this.bm25Signature = "";
+      } catch (error) {
+        throw new StorageWriteError(
+          "Unable to update local document storage. Please try again in a moment.",
+          { cause: error },
+        );
+      }
     });
   }
 
@@ -450,6 +510,21 @@ export class VectorStore {
         totalPages: meta?.totalPages ?? existing?.totalPages,
         indexedAt: meta?.indexedAt ?? new Date().toISOString(),
         hasPdf: meta?.hasPdf ?? existing?.hasPdf,
+        enabled: meta?.enabled ?? existing?.enabled ?? true,
+        tags: meta?.tags ?? existing?.tags ?? [],
+        lastUsedAt: meta?.lastUsedAt ?? existing?.lastUsedAt,
+        documentType:
+          meta?.documentType ??
+          existing?.documentType ??
+          inferDocumentType(filename),
+        embeddingModel:
+          meta?.embeddingModel ??
+          existing?.embeddingModel ??
+          currentEmbeddingModel(),
+        knowledgeBaseVersion:
+          meta?.knowledgeBaseVersion ??
+          existing?.knowledgeBaseVersion ??
+          KNOWLEDGE_BASE_VERSION,
       };
     });
   }

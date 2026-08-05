@@ -1,9 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getDocumentExtractionError, hasUsableDocumentContent } from "@/lib/chat/buildPrompt";
 import { streamChatResponse } from "@/lib/chat/streamChat";
 import { resolveClientIndexingGateMessage, fetchDocumentIndexStatuses, mergeIndexStates } from "@/lib/rag/client";
+import {
+  formatRetrievalScopeLabel,
+  resolveRetrievalDocumentIds,
+  type RetrievalScope,
+} from "@/lib/rag/libraryMeta";
 import type { ChatMessage } from "@/types/chat";
 import type { DocumentContextItem } from "@/types/documentContext";
 import type { DocumentIndexState } from "@/types/rag";
@@ -11,12 +16,15 @@ import { StudyPanel } from "@/components/Study";
 import { AIToolsPanel } from "./AIToolsPanel";
 import { ChatHistory } from "./ChatHistory";
 import { ChatInput } from "./ChatInput";
+import { RetrievalScopeBar } from "./RetrievalScopeBar";
 
 type ChatPanelProps = {
   hasDocuments?: boolean;
   documents?: DocumentContextItem[];
   indexStates?: Record<string, DocumentIndexState>;
   indexingInProgress?: boolean;
+  retrievalScope?: RetrievalScope;
+  onRetrievalScopeChange?: (scope: RetrievalScope) => void;
 };
 
 function createMessage(
@@ -39,6 +47,8 @@ export function ChatPanel({
   documents = [],
   indexStates = {},
   indexingInProgress = false,
+  retrievalScope = { mode: "all-enabled" },
+  onRetrievalScopeChange,
 }: ChatPanelProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -55,6 +65,34 @@ export function ChatPanel({
   const scrollToBottom = useCallback(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, []);
+
+  const scopeDocuments = useMemo(
+    () =>
+      documents.map((document) => ({
+        id: document.id,
+        name: document.name,
+        enabled: document.enabled !== false,
+      })),
+    [documents],
+  );
+
+  const retrievalDocumentIds = useMemo(
+    () => resolveRetrievalDocumentIds(scopeDocuments, retrievalScope),
+    [scopeDocuments, retrievalScope],
+  );
+
+  const searchingLabel = useMemo(
+    () => formatRetrievalScopeLabel(scopeDocuments, retrievalScope),
+    [scopeDocuments, retrievalScope],
+  );
+
+  const scopedDocuments = useMemo(
+    () =>
+      documents.filter((document) =>
+        retrievalDocumentIds.includes(document.id),
+      ),
+    [documents, retrievalDocumentIds],
+  );
 
   useEffect(() => {
     scrollToBottom();
@@ -97,13 +135,16 @@ export function ChatPanel({
         return;
       }
 
+      const gateDocuments =
+        scopedDocuments.length > 0 ? scopedDocuments : documents;
+
       const indexingGateMessage = resolveClientIndexingGateMessage(
-        documents,
-        hasUsableDocumentContent(documents)
+        gateDocuments,
+        hasUsableDocumentContent(gateDocuments)
           ? mergeIndexStates(
               indexStates,
               await fetchDocumentIndexStatuses(
-                documents.map((document) => document.id),
+                gateDocuments.map((document) => document.id),
               ),
             )
           : indexStates,
@@ -121,7 +162,7 @@ export function ChatPanel({
       let streamedContent = "";
       let hasStreamStarted = false;
       const hasTextDocuments = hasUsableDocumentContent(documents);
-      const documentIds = documents.map((document) => document.id);
+      const documentIds = retrievalDocumentIds;
 
       try {
         await streamChatResponse(
@@ -206,7 +247,17 @@ export function ChatPanel({
         setIsLoading(false);
       }
     },
-    [input, isLoading, hasDocuments, messages, documents, indexStates, indexingInProgress],
+    [
+      input,
+      isLoading,
+      hasDocuments,
+      messages,
+      documents,
+      scopedDocuments,
+      retrievalDocumentIds,
+      indexStates,
+      indexingInProgress,
+    ],
   );
 
   function handlePromptSelect(prompt: string) {
@@ -284,6 +335,17 @@ export function ChatPanel({
               : "Enter to send · Shift+Enter for new line"
           }
           focusTrigger={focusTrigger}
+          scopeBar={
+            documents.length > 0 && onRetrievalScopeChange ? (
+              <RetrievalScopeBar
+                scope={retrievalScope}
+                documents={scopeDocuments}
+                searchingLabel={searchingLabel}
+                onChange={onRetrievalScopeChange}
+                disabled={isLoading}
+              />
+            ) : null
+          }
         />
       </div>
     </section>

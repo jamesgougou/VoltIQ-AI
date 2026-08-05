@@ -15,6 +15,14 @@ export type PdfDocument = PdfParseResult & {
   blobUrl: string;
   contentHash?: string;
   indexedAt?: string;
+  enabled?: boolean;
+  tags?: string[];
+  lastUsedAt?: string;
+  documentType?: string;
+  embeddingModel?: string;
+  knowledgeBaseVersion?: string;
+  chunkCount?: number;
+  requiresReindex?: boolean;
 };
 
 /** Lightweight registry entry used by the interactive PDF viewer. */

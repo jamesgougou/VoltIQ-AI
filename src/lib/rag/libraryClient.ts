@@ -111,3 +111,46 @@ export async function createLibraryPdfBlobUrl(
 export function libraryPdfFileUrl(documentId: string): string {
   return `/api/rag/library/${encodeURIComponent(documentId)}/file`;
 }
+
+export async function patchLibraryDocumentMeta(
+  documentId: string,
+  patch: {
+    enabled?: boolean;
+    tags?: string[];
+    documentType?: string;
+  },
+): Promise<void> {
+  const response = await fetch(
+    `/api/rag/library/${encodeURIComponent(documentId)}/meta`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    },
+  );
+
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as {
+      error?: string;
+    } | null;
+    throw new Error(payload?.error || "Unable to update document settings.");
+  }
+}
+
+export async function bulkLibraryAction(
+  action: "enable" | "disable" | "delete",
+  documentIds: string[],
+): Promise<void> {
+  const response = await fetch("/api/rag/library/bulk", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action, documentIds }),
+  });
+
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as {
+      error?: string;
+    } | null;
+    throw new Error(payload?.error || "Unable to complete bulk action.");
+  }
+}

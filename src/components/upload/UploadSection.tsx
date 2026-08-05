@@ -16,12 +16,20 @@ import {
   pollIndexProgress,
 } from "@/lib/rag/client";
 import {
+  bulkLibraryAction,
   createLibraryPdfBlobUrl,
   fetchDocumentLibrary,
   fetchLibraryDocument,
   lookupLibraryByHash,
+  patchLibraryDocumentMeta,
   uploadLibraryPdf,
 } from "@/lib/rag/libraryClient";
+import {
+  formatRetrievalScopeLabel,
+  inferDocumentType,
+  resolveRetrievalDocumentIds,
+  type RetrievalScope,
+} from "@/lib/rag/libraryMeta";
 import {
   clearPdfDocumentCache,
   destroyCachedPdfDocument,
@@ -38,6 +46,9 @@ import type { PdfDocument, PdfParseResult, PdfSourceRef } from "@/types/pdf";
 import type { DocumentIndexState } from "@/types/rag";
 import { PASTED_TEXT_DOCUMENT_ID } from "@/types/rag";
 
+const DUPLICATE_LIBRARY_MESSAGE =
+  "This document already exists in your Knowledge Library.";
+
 function DocumentLibraryPanel({
   pdfs,
   indexStates,
@@ -46,6 +57,11 @@ function DocumentLibraryPanel({
   onRetry,
   onCancel,
   onParseCancelled,
+  onToggleEnabled,
+  onTagsChange,
+  onBulkEnable,
+  onBulkDelete,
+  onBulkReindex,
 }: {
   pdfs: PdfDocument[];
   indexStates: Record<string, DocumentIndexState>;
@@ -54,6 +70,11 @@ function DocumentLibraryPanel({
   onRetry: (documentId: string) => void;
   onCancel: (documentId: string) => void;
   onParseCancelled: () => void;
+  onToggleEnabled: (documentId: string, enabled: boolean) => void;
+  onTagsChange: (documentId: string, tags: string[]) => void;
+  onBulkEnable: (documentIds: string[], enabled: boolean) => void;
+  onBulkDelete: (documentIds: string[]) => void;
+  onBulkReindex: (documentIds: string[]) => void;
 }) {
   const { openDocument } = usePDFViewer();
 
@@ -67,6 +88,11 @@ function DocumentLibraryPanel({
       onRetry={onRetry}
       onCancel={onCancel}
       onParseCancelled={onParseCancelled}
+      onToggleEnabled={onToggleEnabled}
+      onTagsChange={onTagsChange}
+      onBulkEnable={onBulkEnable}
+      onBulkDelete={onBulkDelete}
+      onBulkReindex={onBulkReindex}
     />
   );
 }
@@ -91,6 +117,11 @@ export function UploadSection() {
   const cancelledPastedTextHashRef = useRef<string | null>(null);
   const [libraryReady, setLibraryReady] = useState(false);
   const skipAutoIndexIdsRef = useRef<Set<string>>(new Set());
+  const [retrievalScope, setRetrievalScope] = useState<RetrievalScope>({
+    mode: "all-enabled",
+    currentDocumentId: null,
+    selectedDocumentIds: [],
+  });
 
   function updateIndexState(state: DocumentIndexState) {
     setIndexStates((current) => ({
@@ -119,12 +150,25 @@ export function UploadSection() {
       ? (existing.contentHash ?? fileHash)
       : fileHash;
 
+    // Filename + size duplicate protection (same file re-uploaded).
+    const nameSizeMatch = pdfs.find(
+      (pdf) =>
+        pdf.fileName === result.fileName && pdf.fileSize === result.fileSize,
+    );
+
+    if (
+      nameSizeMatch &&
+      (!existing.found || existing.documentId === nameSizeMatch.id)
+    ) {
+      URL.revokeObjectURL(blobUrl);
+      setToastMessage(DUPLICATE_LIBRARY_MESSAGE);
+      return;
+    }
+
     if (existing.found && existing.documentId && existing.status === "ready") {
       if (pdfs.some((pdf) => pdf.id === existing.documentId)) {
         URL.revokeObjectURL(blobUrl);
-        setToastMessage(
-          `${existing.filename ?? result.fileName} is already in your library.`,
-        );
+        setToastMessage(DUPLICATE_LIBRARY_MESSAGE);
         return;
       }
 
@@ -152,6 +196,12 @@ export function UploadSection() {
           blobUrl: persistedBlobUrl,
           contentHash,
           indexedAt: detail?.indexedAt ?? existing.indexedAt,
+          enabled: true,
+          tags: [],
+          documentType: inferDocumentType(
+            detail?.filename ?? existing.filename ?? result.fileName,
+          ),
+          chunkCount: existing.chunkCount,
         },
       ]);
 
@@ -166,9 +216,7 @@ export function UploadSection() {
         updatedAt: new Date().toISOString(),
       });
 
-      setToastMessage(
-        `${existing.filename ?? result.fileName} loaded from library (no re-index).`,
-      );
+      setToastMessage(DUPLICATE_LIBRARY_MESSAGE);
       return;
     }
 
@@ -181,6 +229,9 @@ export function UploadSection() {
         blobUrl,
         id: documentId,
         contentHash,
+        enabled: true,
+        tags: [],
+        documentType: inferDocumentType(result.fileName),
       },
     ]);
 
@@ -245,6 +296,7 @@ export function UploadSection() {
       text: pdf.text,
       totalPages: pdf.totalPages,
       fileSize: pdf.fileSize,
+      enabled: pdf.enabled !== false,
     }));
 
     if (pastedText.trim()) {
@@ -252,6 +304,7 @@ export function UploadSection() {
         id: PASTED_TEXT_DOCUMENT_ID,
         name: "Pasted Text",
         text: pastedText,
+        enabled: true,
       });
     }
 
@@ -266,7 +319,56 @@ export function UploadSection() {
     [documents],
   );
 
+  const retrievalDocumentIds = useMemo(
+    () =>
+      resolveRetrievalDocumentIds(
+        documents.map((document) => ({
+          id: document.id,
+          enabled: document.enabled,
+        })),
+        retrievalScope,
+      ),
+    [documents, retrievalScope],
+  );
+
   const isIndexing = isAnyDocumentIndexing(indexStates, textDocumentIds);
+  const isRetrievalScopeIndexing = isAnyDocumentIndexing(
+    indexStates,
+    retrievalDocumentIds.length > 0 ? retrievalDocumentIds : textDocumentIds,
+  );
+
+  // Keep current-document scope pointed at a valid enabled PDF.
+  useEffect(() => {
+    const enabledIds = pdfs
+      .filter((pdf) => pdf.enabled !== false)
+      .map((pdf) => pdf.id);
+
+    setRetrievalScope((current) => {
+      const nextCurrent =
+        current.currentDocumentId &&
+        enabledIds.includes(current.currentDocumentId)
+          ? current.currentDocumentId
+          : (enabledIds[0] ?? null);
+
+      const nextSelected = (current.selectedDocumentIds ?? []).filter((id) =>
+        enabledIds.includes(id),
+      );
+
+      if (
+        nextCurrent === current.currentDocumentId &&
+        nextSelected.length === (current.selectedDocumentIds ?? []).length
+      ) {
+        return current;
+      }
+
+      return {
+        ...current,
+        currentDocumentId: nextCurrent,
+        selectedDocumentIds:
+          nextSelected.length > 0 ? nextSelected : enabledIds,
+      };
+    });
+  }, [pdfs]);
 
   const indexDocumentEntry = useCallback(
     async (
@@ -387,9 +489,7 @@ export function UploadSection() {
           );
 
           if (result.skipped || result.reusedExisting) {
-            setToastMessage(
-              `${documentName} already indexed — reused existing vectors.`,
-            );
+            setToastMessage(DUPLICATE_LIBRARY_MESSAGE);
           }
         } else {
           indexedHashesRef.current.delete(resolvedId);
@@ -568,6 +668,15 @@ export function UploadSection() {
               URL.createObjectURL(new Blob([], { type: "application/pdf" })),
             contentHash: document.contentHash,
             indexedAt: document.indexedAt,
+            enabled: document.enabled !== false,
+            tags: document.tags ?? [],
+            lastUsedAt: document.lastUsedAt,
+            documentType:
+              document.documentType ?? inferDocumentType(document.filename),
+            embeddingModel: document.embeddingModel,
+            knowledgeBaseVersion: document.knowledgeBaseVersion,
+            chunkCount: document.chunkCount,
+            requiresReindex: document.requiresReindex,
           });
 
           nextStates[document.documentId] = {
@@ -783,11 +892,134 @@ export function UploadSection() {
         setToastMessage(
           `✅ ${state.filename} indexed successfully. Ready for AI search.`,
         );
+        setPdfs((current) =>
+          current.map((pdf) =>
+            pdf.id === documentId
+              ? {
+                  ...pdf,
+                  indexedAt: state.updatedAt,
+                  chunkCount: state.chunkCount ?? pdf.chunkCount,
+                  requiresReindex: false,
+                }
+              : pdf,
+          ),
+        );
       }
     }
 
     previousIndexStatesRef.current = indexStates;
   }, [indexStates]);
+
+  const handleToggleEnabled = useCallback(
+    (documentId: string, enabled: boolean) => {
+      setPdfs((current) =>
+        current.map((pdf) =>
+          pdf.id === documentId ? { ...pdf, enabled } : pdf,
+        ),
+      );
+
+      void patchLibraryDocumentMeta(documentId, { enabled }).catch((error) => {
+        console.error("Failed to update document enabled state:", error);
+        setToastMessage(
+          error instanceof Error
+            ? error.message
+            : "Unable to update document settings.",
+        );
+      });
+    },
+    [],
+  );
+
+  const handleTagsChange = useCallback((documentId: string, tags: string[]) => {
+    setPdfs((current) =>
+      current.map((pdf) => (pdf.id === documentId ? { ...pdf, tags } : pdf)),
+    );
+
+    void patchLibraryDocumentMeta(documentId, { tags }).catch((error) => {
+      console.error("Failed to update document tags:", error);
+      setToastMessage(
+        error instanceof Error
+          ? error.message
+          : "Unable to update document tags.",
+      );
+    });
+  }, []);
+
+  const handleBulkEnable = useCallback(
+    (documentIds: string[], enabled: boolean) => {
+      if (documentIds.length === 0) {
+        return;
+      }
+
+      const idSet = new Set(documentIds);
+      setPdfs((current) =>
+        current.map((pdf) =>
+          idSet.has(pdf.id) ? { ...pdf, enabled } : pdf,
+        ),
+      );
+
+      void bulkLibraryAction(enabled ? "enable" : "disable", documentIds).catch(
+        (error) => {
+          console.error("Failed bulk enable/disable:", error);
+          setToastMessage(
+            error instanceof Error
+              ? error.message
+              : "Unable to complete bulk action.",
+          );
+        },
+      );
+    },
+    [],
+  );
+
+  const handleBulkDelete = useCallback((documentIds: string[]) => {
+    if (documentIds.length === 0) {
+      return;
+    }
+
+    const idSet = new Set(documentIds);
+
+    setPdfs((current) => {
+      for (const pdf of current) {
+        if (idSet.has(pdf.id) && pdf.blobUrl) {
+          URL.revokeObjectURL(pdf.blobUrl);
+          void destroyCachedPdfDocument(pdf.id);
+        }
+      }
+      return current.filter((pdf) => !idSet.has(pdf.id));
+    });
+
+    for (const documentId of documentIds) {
+      indexedHashesRef.current.delete(documentId);
+      indexingInFlightRef.current.delete(documentId);
+    }
+
+    setIndexStates((current) => {
+      const next = { ...current };
+      for (const documentId of documentIds) {
+        delete next[documentId];
+      }
+      return next;
+    });
+
+    void bulkLibraryAction("delete", documentIds).catch((error) => {
+      console.error("Failed bulk delete:", error);
+      setToastMessage(
+        error instanceof Error
+          ? error.message
+          : "Unable to delete selected documents.",
+      );
+    });
+  }, []);
+
+  const handleBulkReindex = useCallback(
+    (documentIds: string[]) => {
+      for (const documentId of documentIds) {
+        retryDocument(documentId);
+      }
+    },
+    [retryDocument],
+  );
 
   return (
     <PDFViewerProvider sources={pdfSources}>
@@ -796,7 +1028,9 @@ export function UploadSection() {
           hasDocuments={hasDocuments}
           documents={documents}
           indexStates={indexStates}
-          indexingInProgress={isIndexing}
+          indexingInProgress={isRetrievalScopeIndexing}
+          retrievalScope={retrievalScope}
+          onRetrievalScopeChange={setRetrievalScope}
         />
 
         <section
@@ -809,10 +1043,18 @@ export function UploadSection() {
                 id="documents-heading"
                 className="text-sm font-semibold text-slate-900"
               >
-                Documents
+                Knowledge Library
               </h2>
               <p className="mt-0.5 text-xs text-slate-500">
-                PDFs, images, and pasted text used as AI context
+                Multi-document standards library ·{" "}
+                {formatRetrievalScopeLabel(
+                  documents.map((document) => ({
+                    id: document.id,
+                    name: document.name,
+                    enabled: document.enabled,
+                  })),
+                  retrievalScope,
+                )}
               </p>
             </div>
             <button
@@ -836,6 +1078,11 @@ export function UploadSection() {
               onParseCancelled={() =>
                 setToastMessage("Document indexing cancelled.")
               }
+              onToggleEnabled={handleToggleEnabled}
+              onTagsChange={handleTagsChange}
+              onBulkEnable={handleBulkEnable}
+              onBulkDelete={handleBulkDelete}
+              onBulkReindex={handleBulkReindex}
             />
             <ImageUploadManager
               key={`images-${resetKey}`}

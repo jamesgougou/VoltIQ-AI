@@ -20,6 +20,11 @@ import {
   listLibraryDocumentIds,
   saveLibraryExtracted,
 } from "@/lib/rag/libraryStore";
+import {
+  KNOWLEDGE_BASE_VERSION,
+  documentNeedsReindex,
+  inferDocumentType,
+} from "@/lib/rag/libraryMeta";
 import { ragDebug, ragError, ragLog } from "@/lib/rag/logger";
 import { getVectorStore, StorageWriteError } from "@/lib/rag/store";
 import type {
@@ -491,6 +496,9 @@ export async function listLibraryDocuments(): Promise<LibraryDocumentSummary[]> 
     const hasPdf =
       record.hasPdf ?? libraryDoc?.hasPdf ?? (await libraryHasPdf(record.documentId));
 
+    const embeddingModel = record.embeddingModel;
+    const requiresReindex = documentNeedsReindex(embeddingModel);
+
     summaries.push({
       documentId: record.documentId,
       filename: record.filename,
@@ -504,6 +512,14 @@ export async function listLibraryDocuments(): Promise<LibraryDocumentSummary[]> 
       chunkCount: status?.chunkCount ?? record.chunkIds.length,
       error: status?.error,
       stage: status?.stage,
+      enabled: record.enabled ?? true,
+      tags: record.tags ?? [],
+      lastUsedAt: record.lastUsedAt,
+      documentType: record.documentType ?? inferDocumentType(record.filename),
+      embeddingModel,
+      knowledgeBaseVersion:
+        record.knowledgeBaseVersion ?? KNOWLEDGE_BASE_VERSION,
+      requiresReindex,
     });
   }
 
@@ -532,6 +548,11 @@ export async function listLibraryDocuments(): Promise<LibraryDocumentSummary[]> 
       chunkCount: status?.chunkCount,
       error: status?.error,
       stage: status?.stage,
+      enabled: true,
+      tags: [],
+      documentType: inferDocumentType(libraryDoc.filename),
+      knowledgeBaseVersion: KNOWLEDGE_BASE_VERSION,
+      requiresReindex: false,
     });
   }
 
@@ -549,14 +570,16 @@ export async function hasIndexedContent(): Promise<boolean> {
 export async function retrieveRelevantChunks(
   query: string,
   topK = TOP_K_CHUNKS,
+  documentIds?: string[],
 ): Promise<RetrievedChunk[]> {
-  const result = await retrieveWithHybridSearch(query, topK);
+  const result = await retrieveWithHybridSearch(query, topK, documentIds);
   return result.chunks;
 }
 
 export async function retrieveWithHybridSearch(
   query: string,
   topK = TOP_K_CHUNKS,
+  documentIds?: string[],
 ): Promise<HybridRetrievalResult> {
   const trimmedQuery = query.trim();
 
@@ -576,18 +599,58 @@ export async function retrieveWithHybridSearch(
   }
 
   try {
-    const result = await hybridRetrieve(trimmedQuery, topK);
+    const startedAt = Date.now();
+    const result = await hybridRetrieve(trimmedQuery, topK, { documentIds });
+    const searchTimeMs = Date.now() - startedAt;
+
+    const records = await getVectorStore().listDocumentRecords();
+    const recordById = new Map(
+      records.map((record) => [record.documentId, record]),
+    );
+
+    const searchedNames = (
+      documentIds?.length
+        ? documentIds.map(
+            (id) => recordById.get(id)?.filename ?? id,
+          )
+        : records
+            .filter((record) => record.enabled !== false)
+            .map((record) => record.filename)
+    ).map((name) => name.replace(/\.[^.]+$/, ""));
+
+    console.info("[RAG]");
+    console.info(
+      `Documents searched:\n${
+        searchedNames.length > 0 ? searchedNames.join("\n") : "(none)"
+      }`,
+    );
+    console.info(`Chunks retrieved:\n${result.chunks.length}`);
+    console.info(`Search time:\n${searchTimeMs} ms`);
 
     ragLog(
       "retrieve",
-      `Retrieved ${result.chunks.length} chunk(s) for query "${trimmedQuery.slice(0, 80)}".`,
+      `Retrieved ${result.chunks.length} chunk(s) for query "${trimmedQuery.slice(0, 80)}" in ${searchTimeMs}ms.`,
     );
     ragDebug("Retrieval results", {
       retrievedChunkCount: result.chunks.length,
       topScore: result.chunks[0]?.similarityScore,
       insufficientRetrieval: result.insufficientRetrieval,
       intent: result.profile.intent,
+      documentIds,
+      searchTimeMs,
     });
+
+    // Track recently used documents (meta-only — does not rewrite chunk store).
+    const usedIds = [...new Set(result.chunks.map((chunk) => chunk.documentId))];
+    if (usedIds.length > 0) {
+      const usedAt = new Date().toISOString();
+      await getVectorStore().updateDocumentRecordsMeta(
+        usedIds.map((documentId) => ({
+          documentId,
+          patch: { lastUsedAt: usedAt },
+        })),
+      );
+    }
 
     return result;
   } catch (error) {

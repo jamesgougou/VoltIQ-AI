@@ -90,6 +90,13 @@ export type LibraryDocumentSummary = {
   chunkCount?: number;
   error?: string;
   stage?: IndexStage;
+  enabled: boolean;
+  tags: string[];
+  lastUsedAt?: string;
+  documentType: string;
+  embeddingModel?: string;
+  knowledgeBaseVersion?: string;
+  requiresReindex?: boolean;
 };
 
 export const PASTED_TEXT_DOCUMENT_ID = "pasted-text";

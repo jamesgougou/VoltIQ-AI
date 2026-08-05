@@ -5,6 +5,8 @@ export type DocumentContextItem = {
   ocrText?: string;
   totalPages?: number;
   fileSize?: number;
+  /** When false, document is stored but excluded from RAG retrieval. */
+  enabled?: boolean;
 };
 
 export type DocumentContextPayload = DocumentContextItem[];

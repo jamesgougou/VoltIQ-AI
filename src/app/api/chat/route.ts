@@ -165,6 +165,8 @@ export async function POST(request: Request) {
     const openai = getOpenAIClient();
     const retrieval = await retrieveWithHybridSearch(
       latestUserMessage.content.trim(),
+      undefined,
+      documentIds,
     );
     const retrievedChunks = retrieval.chunks;
     const sourceMetadata = toSourceMetadata(retrievedChunks);
