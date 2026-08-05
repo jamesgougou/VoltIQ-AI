@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 
 type IndexingToastProps = {
   message: string | null;
@@ -8,14 +8,23 @@ type IndexingToastProps = {
 };
 
 export function IndexingToast({ message, onDismiss }: IndexingToastProps) {
+  const onDismissRef = useRef(onDismiss);
+
+  useEffect(() => {
+    onDismissRef.current = onDismiss;
+  }, [onDismiss]);
+
   useEffect(() => {
     if (!message) {
       return;
     }
 
-    const timeoutId = window.setTimeout(onDismiss, 5000);
+    const timeoutId = window.setTimeout(() => {
+      onDismissRef.current();
+    }, 5000);
+
     return () => window.clearTimeout(timeoutId);
-  }, [message, onDismiss]);
+  }, [message]);
 
   if (!message) {
     return null;
@@ -31,7 +40,7 @@ export function IndexingToast({ message, onDismiss }: IndexingToastProps) {
       <button
         type="button"
         onClick={onDismiss}
-        className="mt-2 text-xs font-medium text-slate-500 hover:text-slate-700"
+        className="mt-2 text-xs font-medium text-slate-500 hover:text-slate-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-500"
       >
         Dismiss
       </button>

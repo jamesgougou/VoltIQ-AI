@@ -9,7 +9,7 @@ import type {
 } from "@/types/rag";
 
 const INDEX_REQUEST_TIMEOUT_MS = 5 * 60 * 1000;
-const STATUS_POLL_INTERVAL_MS = 500;
+const STATUS_POLL_INTERVAL_MS = 1000;
 
 export function buildIndexRequest(input: {
   documentId: string;

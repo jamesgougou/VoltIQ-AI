@@ -49,9 +49,14 @@ export function CitationCard({
         <button
           type="button"
           onClick={() => setExpanded((current) => !current)}
-          className="flex min-w-0 flex-1 items-start gap-3 text-left transition-colors"
+          className="flex min-w-0 flex-1 items-start gap-3 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-violet-500"
           aria-expanded={expanded}
           aria-controls={`${cardId}-details`}
+          aria-label={
+            expanded
+              ? `Collapse citation ${citation.index}: ${citation.document}`
+              : `Expand citation ${citation.index}: ${citation.document}`
+          }
         >
           <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white text-slate-500 shadow-sm">
             <DocumentIcon />

@@ -833,15 +833,6 @@ export async function hasIndexedContent(): Promise<boolean> {
   return getVectorStore().hasIndexedContent();
 }
 
-export async function retrieveRelevantChunks(
-  query: string,
-  topK = TOP_K_CHUNKS,
-  documentIds?: string[],
-): Promise<RetrievedChunk[]> {
-  const result = await retrieveWithHybridSearch(query, topK, documentIds);
-  return result.chunks;
-}
-
 export async function retrieveWithHybridSearch(
   query: string,
   topK = TOP_K_CHUNKS,

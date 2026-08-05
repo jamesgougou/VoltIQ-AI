@@ -67,10 +67,6 @@ export function StudyWorkspace({
   const [error, setError] = useState<string | null>(null);
   const autoStartedModeRef = useRef<StudyModeId | null>(null);
 
-  useEffect(() => {
-    saveStudyProgress(progress);
-  }, [progress]);
-
   const persistProgress = useCallback((next: StudyProgress) => {
     setProgress(next);
     saveStudyProgress(next);
@@ -199,15 +195,21 @@ export function StudyWorkspace({
       return;
     }
 
-    if (activeMode === "quiz") {
-      autoStartedModeRef.current = "quiz";
-      void startQuiz({ mode: "quiz", count: 10 });
+    if (activeMode !== "quiz" && activeMode !== "flashcards") {
+      return;
     }
 
-    if (activeMode === "flashcards") {
-      autoStartedModeRef.current = "flashcards";
-      void startFlashcards();
-    }
+    autoStartedModeRef.current = activeMode;
+    const mode = activeMode;
+    const timeoutId = window.setTimeout(() => {
+      if (mode === "quiz") {
+        void startQuiz({ mode: "quiz", count: 10 });
+      } else {
+        void startFlashcards();
+      }
+    }, 0);
+
+    return () => window.clearTimeout(timeoutId);
   }, [activeMode, session, loading, examComplete, startQuiz, startFlashcards]);
 
   function handleAnswered(
@@ -364,6 +366,7 @@ export function StudyWorkspace({
         session &&
         (session.mode === "quiz" || session.mode === "exam") && (
           <QuizSession
+            key={`${session.id}-${session.index}`}
             session={session}
             onSessionChange={setSession}
             onAnswered={handleAnswered}

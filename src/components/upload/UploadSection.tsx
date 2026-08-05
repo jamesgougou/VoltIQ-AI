@@ -467,31 +467,35 @@ export function UploadSection() {
       .filter((pdf) => pdf.enabled !== false)
       .map((pdf) => pdf.id);
 
-    setRetrievalScope((current) => {
-      const nextCurrent =
-        current.currentDocumentId &&
-        enabledIds.includes(current.currentDocumentId)
-          ? current.currentDocumentId
-          : (enabledIds[0] ?? null);
+    const timeoutId = window.setTimeout(() => {
+      setRetrievalScope((current) => {
+        const nextCurrent =
+          current.currentDocumentId &&
+          enabledIds.includes(current.currentDocumentId)
+            ? current.currentDocumentId
+            : (enabledIds[0] ?? null);
 
-      const nextSelected = (current.selectedDocumentIds ?? []).filter((id) =>
-        enabledIds.includes(id),
-      );
+        const nextSelected = (current.selectedDocumentIds ?? []).filter((id) =>
+          enabledIds.includes(id),
+        );
 
-      if (
-        nextCurrent === current.currentDocumentId &&
-        nextSelected.length === (current.selectedDocumentIds ?? []).length
-      ) {
-        return current;
-      }
+        if (
+          nextCurrent === current.currentDocumentId &&
+          nextSelected.length === (current.selectedDocumentIds ?? []).length
+        ) {
+          return current;
+        }
 
-      return {
-        ...current,
-        currentDocumentId: nextCurrent,
-        selectedDocumentIds:
-          nextSelected.length > 0 ? nextSelected : enabledIds,
-      };
-    });
+        return {
+          ...current,
+          currentDocumentId: nextCurrent,
+          selectedDocumentIds:
+            nextSelected.length > 0 ? nextSelected : enabledIds,
+        };
+      });
+    }, 0);
+
+    return () => window.clearTimeout(timeoutId);
   }, [pdfs]);
 
   const indexDocumentEntry = useCallback(
@@ -906,6 +910,7 @@ export function UploadSection() {
 
   useEffect(() => {
     let cancelled = false;
+    const provisionalBlobUrls: string[] = [];
 
     async function hydrateLibrary() {
       try {
@@ -963,6 +968,10 @@ export function UploadSection() {
               (await createLibraryImageBlobUrl(document.documentId)) ??
               libraryImageFileUrl(document.documentId);
 
+            if (previewUrl.startsWith("blob:")) {
+              provisionalBlobUrls.push(previewUrl);
+            }
+
             hydratedImages.push({
               id: document.documentId,
               fileName: document.filename,
@@ -989,11 +998,18 @@ export function UploadSection() {
             continue;
           }
 
-          const detail = await fetchLibraryDocument(document.documentId);
+          // Metadata + PDF blob only — avoid N+1 full-text fetches on hydrate.
           const blobUrl = await createLibraryPdfBlobUrl(document.documentId);
 
           if (!document.hasPdf && !blobUrl) {
             continue;
+          }
+
+          const resolvedBlobUrl =
+            blobUrl ??
+            URL.createObjectURL(new Blob([], { type: "application/pdf" }));
+          if (resolvedBlobUrl.startsWith("blob:")) {
+            provisionalBlobUrls.push(resolvedBlobUrl);
           }
 
           hydratedPdfs.push({
@@ -1002,14 +1018,11 @@ export function UploadSection() {
             fileSize: document.fileSize,
             totalPages: document.totalPages,
             text:
-              detail?.text ||
-              (document.status === "ready"
+              document.status === "ready"
                 ? "[Indexed document — content available via retrieval]"
-                : ""),
-            pages: detail?.pages ?? [],
-            blobUrl:
-              blobUrl ??
-              URL.createObjectURL(new Blob([], { type: "application/pdf" })),
+                : "",
+            pages: [],
+            blobUrl: resolvedBlobUrl,
             contentHash: document.contentHash,
             indexedAt: document.indexedAt,
             enabled: document.enabled !== false,
@@ -1025,8 +1038,13 @@ export function UploadSection() {
         }
 
         if (cancelled) {
+          for (const url of provisionalBlobUrls) {
+            URL.revokeObjectURL(url);
+          }
           return;
         }
+
+        provisionalBlobUrls.length = 0;
 
         if (hydratedPdfs.length > 0) {
           setPdfs((current) => {
@@ -1053,6 +1071,9 @@ export function UploadSection() {
         }
       } catch (error) {
         console.error("Failed to hydrate document library:", error);
+        for (const url of provisionalBlobUrls) {
+          URL.revokeObjectURL(url);
+        }
       } finally {
         if (!cancelled) {
           setLibraryReady(true);
@@ -1229,7 +1250,6 @@ export function UploadSection() {
     }
 
     let cancelled = false;
-    const pollInterval = isIndexing ? 500 : 2000;
 
     async function pollStatuses() {
       const statuses = await fetchDocumentIndexStatuses(managedDocumentIds);
@@ -1245,29 +1265,34 @@ export function UploadSection() {
           continue;
         }
 
-        const document = documents.find((item) => item.id === status.documentId);
+        const pdf = pdfs.find((item) => item.id === status.documentId);
+        const image = images.find((item) => item.id === status.documentId);
+        const contentHash = pdf?.contentHash ?? image?.contentHash;
 
-        if (!document) {
-          continue;
+        if (contentHash) {
+          indexedHashesRef.current.set(status.documentId, contentHash);
         }
-
-        indexedHashesRef.current.set(
-          status.documentId,
-          await hashDocumentContent(document.text),
-        );
       }
     }
 
     void pollStatuses();
+
+    // Background polling only while indexing — avoids thrashing when idle.
+    if (!isIndexing) {
+      return () => {
+        cancelled = true;
+      };
+    }
+
     const intervalId = window.setInterval(() => {
       void pollStatuses();
-    }, pollInterval);
+    }, 1000);
 
     return () => {
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [documents, managedDocumentIds, isIndexing]);
+  }, [managedDocumentIds, isIndexing, pdfs, images]);
 
   useEffect(() => {
     for (const [documentId, state] of Object.entries(indexStates)) {

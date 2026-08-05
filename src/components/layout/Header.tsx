@@ -1,7 +1,7 @@
 export function Header() {
   return (
     <header className="border-b border-slate-200 bg-white">
-      <div className="mx-auto flex h-14 w-full max-w-5xl items-center px-4 sm:px-6">
+      <div className="mx-auto flex min-h-14 w-full max-w-5xl items-center py-2 px-4 sm:px-6">
         <div className="flex items-center gap-3">
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-violet-600">
             <svg
@@ -19,9 +19,14 @@ export function Header() {
               />
             </svg>
           </div>
-          <h1 className="text-lg font-semibold tracking-tight text-slate-900">
-            VoltIQ AI
-          </h1>
+          <div>
+            <h1 className="text-lg font-semibold tracking-tight text-slate-900">
+              VoltIQ AI
+            </h1>
+            <p className="text-[11px] font-medium text-slate-500">
+              Foundation v1.0
+            </p>
+          </div>
         </div>
       </div>
     </header>

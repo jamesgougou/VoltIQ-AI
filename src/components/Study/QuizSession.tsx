@@ -27,6 +27,10 @@ export type FollowUpAction =
   | "explain"
   | "example";
 
+function elapsedSince(startedAt: number): number {
+  return Date.now() - startedAt;
+}
+
 export function QuizSession({
   session,
   onSessionChange,
@@ -43,16 +47,16 @@ export function QuizSession({
   const [marking, setMarking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [startedAt] = useState(() => Date.now());
-  const [remaining, setRemaining] = useState<number | null>(
-    session.timed && session.durationSeconds
-      ? session.durationSeconds
-      : null,
-  );
+  const [remaining, setRemaining] = useState<number | null>(() => {
+    if (!session.timed || !session.durationSeconds) {
+      return null;
+    }
 
-  useEffect(() => {
-    setDraft("");
-    setError(null);
-  }, [session.index, question?.id]);
+    const elapsedSeconds = Math.floor(
+      (Date.now() - new Date(session.startedAt).getTime()) / 1000,
+    );
+    return Math.max(0, session.durationSeconds - elapsedSeconds);
+  });
 
   useEffect(() => {
     if (!session.timed || !session.durationSeconds) {
@@ -60,7 +64,9 @@ export function QuizSession({
     }
 
     const timer = window.setInterval(() => {
-      const elapsed = Math.floor((Date.now() - new Date(session.startedAt).getTime()) / 1000);
+      const elapsed = Math.floor(
+        (Date.now() - new Date(session.startedAt).getTime()) / 1000,
+      );
       const left = Math.max(0, session.durationSeconds! - elapsed);
       setRemaining(left);
       if (left <= 0) {
@@ -122,7 +128,7 @@ export function QuizSession({
       };
 
       onSessionChange(nextSession);
-      onAnswered(question, result, Date.now() - startedAt);
+      onAnswered(question, result, elapsedSince(startedAt));
     } catch (submitError) {
       setError(
         submitError instanceof Error
