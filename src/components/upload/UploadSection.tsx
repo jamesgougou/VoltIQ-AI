@@ -31,6 +31,7 @@ import {
 import {
   formatRetrievalScopeLabel,
   inferDocumentType,
+  resolveLibrarySourceKind,
   resolveRetrievalDocumentIds,
   type RetrievalScope,
 } from "@/lib/rag/libraryMeta";
@@ -947,12 +948,17 @@ export function UploadSection() {
             updatedAt: document.indexedAt || new Date().toISOString(),
           };
 
-          const isImage =
-            document.sourceKind === "image" ||
-            document.hasImage ||
-            document.documentType === "Image";
+          const sourceKind = resolveLibrarySourceKind({
+            hasPdf: document.hasPdf,
+            hasImage: document.hasImage,
+            sourceKind: document.sourceKind,
+            filename: document.filename,
+            documentType: document.documentType,
+            mimeType: document.mimeType,
+          });
 
-          if (isImage) {
+          // Images belong only in the Images section.
+          if (sourceKind === "image") {
             const previewUrl =
               (await createLibraryImageBlobUrl(document.documentId)) ??
               libraryImageFileUrl(document.documentId);
@@ -973,8 +979,22 @@ export function UploadSection() {
             continue;
           }
 
+          // Knowledge Library is PDF/text documents only — never images.
+          if (sourceKind !== "pdf" && sourceKind !== "text") {
+            continue;
+          }
+
+          // Skip pure pasted-text style entries without a PDF artifact.
+          if (sourceKind === "text" && !document.hasPdf) {
+            continue;
+          }
+
           const detail = await fetchLibraryDocument(document.documentId);
           const blobUrl = await createLibraryPdfBlobUrl(document.documentId);
+
+          if (!document.hasPdf && !blobUrl) {
+            continue;
+          }
 
           hydratedPdfs.push({
             id: document.documentId,

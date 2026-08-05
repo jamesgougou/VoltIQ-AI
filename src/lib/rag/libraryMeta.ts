@@ -36,10 +36,73 @@ export type RetrievalScope = {
   selectedDocumentIds?: string[];
 };
 
+const IMAGE_FILENAME_RE = /\.(png|jpe?g|webp|gif|bmp|heic)$/i;
+
+export function isImageFilename(filename: string): boolean {
+  return IMAGE_FILENAME_RE.test(filename);
+}
+
+/**
+ * Resolve whether a library item belongs in Knowledge Library (pdf) or Images.
+ * Filesystem flags win over stale metadata so persisted items migrate correctly.
+ */
+export function resolveLibrarySourceKind(input: {
+  hasPdf?: boolean;
+  hasImage?: boolean;
+  sourceKind?: "pdf" | "image" | "text" | string | null;
+  filename?: string;
+  documentType?: string;
+  mimeType?: string;
+}): "pdf" | "image" | "text" {
+  const hasPdf = Boolean(input.hasPdf);
+  const hasImage = Boolean(input.hasImage);
+
+  if (hasImage && !hasPdf) {
+    return "image";
+  }
+
+  if (hasPdf && !hasImage) {
+    return "pdf";
+  }
+
+  if (hasPdf && hasImage) {
+    // Prefer explicit kind; default to PDF so Knowledge Library keeps standards.
+    if (input.sourceKind === "image") {
+      return "image";
+    }
+    return "pdf";
+  }
+
+  if (input.sourceKind === "image" || input.sourceKind === "pdf" || input.sourceKind === "text") {
+    return input.sourceKind;
+  }
+
+  const mime = (input.mimeType ?? "").toLowerCase();
+  if (mime.startsWith("image/")) {
+    return "image";
+  }
+
+  if (
+    input.documentType === "Image" ||
+    (input.filename ? isImageFilename(input.filename) : false)
+  ) {
+    return "image";
+  }
+
+  if (
+    input.documentType === "PDF" ||
+    (input.filename ? input.filename.toLowerCase().endsWith(".pdf") : false)
+  ) {
+    return "pdf";
+  }
+
+  return "text";
+}
+
 export function inferDocumentType(filename: string): string {
   const name = filename.toLowerCase();
 
-  if (/\.(png|jpe?g|webp|gif|bmp|heic)$/i.test(name)) {
+  if (isImageFilename(name)) {
     return "Image";
   }
 

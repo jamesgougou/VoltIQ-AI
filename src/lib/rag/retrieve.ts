@@ -26,6 +26,7 @@ import {
   KNOWLEDGE_BASE_VERSION,
   documentNeedsReindex,
   inferDocumentType,
+  resolveLibrarySourceKind,
 } from "@/lib/rag/libraryMeta";
 import { ragDebug, ragError, ragLog } from "@/lib/rag/logger";
 import { getVectorStore, StorageWriteError } from "@/lib/rag/store";
@@ -271,12 +272,20 @@ export async function indexDocument(
     await statusStore.updateProgress(documentId, { stage: "chunking" });
     ragLog("chunk", `Chunking document: ${documentName}`);
 
+    const chunkSourceKind = resolveLibrarySourceKind({
+      hasPdf: await libraryHasPdf(documentId),
+      hasImage: await libraryHasImage(documentId),
+      sourceKind: request.sourceKind,
+      filename: documentName,
+      mimeType: request.mimeType,
+    });
+
     const chunks = chunkDocument({
       documentId,
       documentName,
       text,
       pages: request.pages,
-      sourceKind: request.sourceKind,
+      sourceKind: chunkSourceKind,
     });
 
     ragLog(
@@ -388,6 +397,13 @@ export async function indexDocument(
     const indexedAt = new Date().toISOString();
     const hasPdf = await libraryHasPdf(documentId);
     const hasImage = await libraryHasImage(documentId);
+    const sourceKind = resolveLibrarySourceKind({
+      hasPdf,
+      hasImage,
+      sourceKind: request.sourceKind,
+      filename: documentName,
+      mimeType: request.mimeType,
+    });
     const pages = request.pages ?? [];
     // Persist page text for session restore; avoid requiring a second full-doc join at index time.
     const persistedText =
@@ -408,14 +424,12 @@ export async function indexDocument(
         indexedAt,
         hasPdf,
         hasImage,
-        sourceKind: request.sourceKind,
+        sourceKind,
         mimeType: request.mimeType,
         ocrText: request.ocrText,
         description: request.description,
         documentType:
-          request.sourceKind === "image"
-            ? "Image"
-            : inferDocumentType(documentName),
+          sourceKind === "image" ? "Image" : inferDocumentType(documentName),
       },
       signal,
     );
@@ -429,7 +443,7 @@ export async function indexDocument(
       indexedAt,
       text: persistedText,
       pages,
-      sourceKind: request.sourceKind,
+      sourceKind,
       mimeType: request.mimeType,
       ocrText: request.ocrText,
       description: request.description,
@@ -668,16 +682,56 @@ export async function listLibraryDocuments(): Promise<LibraryDocumentSummary[]> 
   const summaries: LibraryDocumentSummary[] = [];
   const seen = new Set<string>();
 
+  const migrationPatches: Array<{
+    documentId: string;
+    patch: {
+      hasPdf: boolean;
+      hasImage: boolean;
+      sourceKind: "pdf" | "image" | "text";
+      documentType?: string;
+    };
+  }> = [];
+
   for (const record of records) {
     seen.add(record.documentId);
     const status = await reconcileDocumentStatus(record.documentId);
     const libraryDoc = await getLibraryDocument(record.documentId);
-    const hasPdf =
-      record.hasPdf ?? libraryDoc?.hasPdf ?? (await libraryHasPdf(record.documentId));
-    const hasImage =
-      record.hasImage ??
-      libraryDoc?.hasImage ??
-      (await libraryHasImage(record.documentId));
+
+    // Filesystem artifacts are authoritative for library section placement.
+    const hasPdf = await libraryHasPdf(record.documentId);
+    const hasImage = await libraryHasImage(record.documentId);
+    const sourceKind = resolveLibrarySourceKind({
+      hasPdf,
+      hasImage,
+      sourceKind: record.sourceKind ?? libraryDoc?.sourceKind,
+      filename: record.filename,
+      documentType: record.documentType,
+      mimeType: record.mimeType ?? libraryDoc?.mimeType,
+    });
+
+    const documentType =
+      sourceKind === "image"
+        ? "Image"
+        : record.documentType && record.documentType !== "Image"
+          ? record.documentType
+          : inferDocumentType(record.filename);
+
+    if (
+      record.hasPdf !== hasPdf ||
+      record.hasImage !== hasImage ||
+      record.sourceKind !== sourceKind ||
+      (sourceKind === "image" && record.documentType !== "Image")
+    ) {
+      migrationPatches.push({
+        documentId: record.documentId,
+        patch: {
+          hasPdf,
+          hasImage,
+          sourceKind,
+          documentType,
+        },
+      });
+    }
 
     const embeddingModel = record.embeddingModel;
     const requiresReindex = documentNeedsReindex(embeddingModel);
@@ -692,10 +746,7 @@ export async function listLibraryDocuments(): Promise<LibraryDocumentSummary[]> 
         record.indexedAt ?? libraryDoc?.indexedAt ?? status?.updatedAt ?? "",
       hasPdf,
       hasImage,
-      sourceKind:
-        record.sourceKind ??
-        libraryDoc?.sourceKind ??
-        (hasImage ? "image" : hasPdf ? "pdf" : "text"),
+      sourceKind,
       mimeType: record.mimeType ?? libraryDoc?.mimeType,
       ocrText: record.ocrText ?? libraryDoc?.ocrText,
       description: record.description ?? libraryDoc?.description,
@@ -706,12 +757,20 @@ export async function listLibraryDocuments(): Promise<LibraryDocumentSummary[]> 
       enabled: record.enabled ?? true,
       tags: record.tags ?? [],
       lastUsedAt: record.lastUsedAt,
-      documentType: record.documentType ?? inferDocumentType(record.filename),
+      documentType,
       embeddingModel,
       knowledgeBaseVersion:
         record.knowledgeBaseVersion ?? KNOWLEDGE_BASE_VERSION,
       requiresReindex,
     });
+  }
+
+  if (migrationPatches.length > 0) {
+    try {
+      await vectorStore.updateDocumentRecordsMeta(migrationPatches);
+    } catch (error) {
+      console.warn("[RAG:library] Failed to migrate sourceKind metadata:", error);
+    }
   }
 
   // Include library folders that may not yet have vector records (edge recovery).
@@ -727,6 +786,16 @@ export async function listLibraryDocuments(): Promise<LibraryDocumentSummary[]> 
 
     const status = await statusStore.getStatus(documentId);
 
+    const hasPdf = libraryDoc.hasPdf;
+    const hasImage = libraryDoc.hasImage;
+    const sourceKind = resolveLibrarySourceKind({
+      hasPdf,
+      hasImage,
+      sourceKind: libraryDoc.sourceKind,
+      filename: libraryDoc.filename,
+      mimeType: libraryDoc.mimeType,
+    });
+
     summaries.push({
       documentId,
       filename: libraryDoc.filename,
@@ -734,9 +803,9 @@ export async function listLibraryDocuments(): Promise<LibraryDocumentSummary[]> 
       fileSize: libraryDoc.fileSize,
       totalPages: libraryDoc.totalPages,
       indexedAt: libraryDoc.indexedAt,
-      hasPdf: libraryDoc.hasPdf,
-      hasImage: libraryDoc.hasImage,
-      sourceKind: libraryDoc.sourceKind,
+      hasPdf,
+      hasImage,
+      sourceKind,
       mimeType: libraryDoc.mimeType,
       ocrText: libraryDoc.ocrText,
       description: libraryDoc.description,
@@ -746,7 +815,8 @@ export async function listLibraryDocuments(): Promise<LibraryDocumentSummary[]> 
       stage: status?.stage,
       enabled: true,
       tags: [],
-      documentType: inferDocumentType(libraryDoc.filename),
+      documentType:
+        sourceKind === "image" ? "Image" : inferDocumentType(libraryDoc.filename),
       knowledgeBaseVersion: KNOWLEDGE_BASE_VERSION,
       requiresReindex: false,
     });

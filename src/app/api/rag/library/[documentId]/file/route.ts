@@ -69,7 +69,11 @@ export async function PUT(request: Request, context: RouteContext) {
     }
 
     await saveLibraryPdf(documentId, Buffer.from(arrayBuffer));
-    await getVectorStore().updateDocumentRecord(documentId, { hasPdf: true });
+    await getVectorStore().updateDocumentRecord(documentId, {
+      hasPdf: true,
+      hasImage: false,
+      sourceKind: "pdf",
+    });
 
     return Response.json({
       documentId,

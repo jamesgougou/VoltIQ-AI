@@ -7,6 +7,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import path from "node:path";
+import { resolveLibrarySourceKind } from "@/lib/rag/libraryMeta";
 import type { DocumentSourceKind, PdfPageText } from "@/lib/rag/types";
 
 export type LibraryDocumentArtifacts = {
@@ -179,9 +180,13 @@ export async function getLibraryDocument(
     ...extracted,
     hasPdf,
     hasImage,
-    sourceKind:
-      extracted.sourceKind ??
-      (hasImage ? "image" : hasPdf ? "pdf" : "text"),
+    sourceKind: resolveLibrarySourceKind({
+      hasPdf,
+      hasImage,
+      sourceKind: extracted.sourceKind,
+      filename: extracted.filename,
+      mimeType: extracted.mimeType,
+    }),
   };
 }
 
