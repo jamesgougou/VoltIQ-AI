@@ -35,13 +35,33 @@ const INDEXING_STALE_MS = 10 * 60 * 1000;
 function resolveDocumentText(request: IndexDocumentRequest): {
   text: string;
   extractedPageCount: number;
+  characterCount: number;
 } {
   const extractedPageCount = request.pages?.length ?? 0;
-  const textFromPages =
-    request.pages?.map((page) => page.text).join("\n\n").trim() ?? "";
-  const text = request.text.trim() || textFromPages;
 
-  return { text, extractedPageCount };
+  // When pages are present, chunkDocument processes them one page at a time.
+  // Do not join every page into one enormous string just for logging/fallback.
+  if (request.pages?.length) {
+    let characterCount = 0;
+
+    for (const page of request.pages) {
+      characterCount += page.text.length;
+    }
+
+    return {
+      text: request.text.trim(),
+      extractedPageCount,
+      characterCount,
+    };
+  }
+
+  const text = request.text.trim();
+
+  return {
+    text,
+    extractedPageCount,
+    characterCount: text.length,
+  };
 }
 
 function isDebugDocument(documentName: string): boolean {
@@ -114,19 +134,20 @@ export async function indexDocument(
   const vectorStore = getVectorStore();
   const statusStore = getIndexStatusStore();
   const { documentId, documentName, contentHash } = request;
-  const { text, extractedPageCount } = resolveDocumentText(request);
+  const { text, extractedPageCount, characterCount } =
+    resolveDocumentText(request);
   const debugDocument = isDebugDocument(documentName);
 
   ragLog("upload", `Uploading document: ${documentName} (${documentId})`);
   ragLog(
     "extract",
-    `Extracting text for ${documentName}: ${extractedPageCount} pages, ${text.length.toLocaleString()} characters.`,
+    `Extracting text for ${documentName}: ${extractedPageCount} pages, ${characterCount.toLocaleString()} characters.`,
   );
 
   if (debugDocument) {
     ragDebug("AS3000 upload stats", {
       extractedPages: extractedPageCount,
-      characterCount: text.length,
+      characterCount,
     });
   }
 
