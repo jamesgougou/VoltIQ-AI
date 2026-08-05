@@ -2,6 +2,7 @@ export type CitationConfidence = "High" | "Medium" | "Low";
 
 export type Citation = {
   id: string;
+  documentId: string;
   document: string;
   fileName: string;
   page?: number;

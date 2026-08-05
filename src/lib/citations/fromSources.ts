@@ -71,6 +71,7 @@ export function citationsFromSources(
       if (!isValidSource(source)) {
         return {
           id: source.chunkId || crypto.randomUUID(),
+          documentId: source.documentId || "",
           document: source.filename || "Unknown document",
           fileName: source.filename || "Unknown document",
           page: source.page,
@@ -87,6 +88,7 @@ export function citationsFromSources(
 
       return {
         id: source.chunkId,
+        documentId: source.documentId,
         document: source.filename,
         fileName: source.filename,
         page: source.page,

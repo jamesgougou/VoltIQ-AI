@@ -55,20 +55,29 @@ export function PdfUploadManager({
     setIsLoading(true);
 
     try {
+      const blobUrl = URL.createObjectURL(file);
       const { parsePdf } = await import("@/lib/pdf/parsePdf.client");
-      const { totalPages, text, pages } = await parsePdf(file);
 
-      if (parseAbortRef.current) {
-        return;
+      try {
+        const { totalPages, text, pages } = await parsePdf(file);
+
+        if (parseAbortRef.current) {
+          URL.revokeObjectURL(blobUrl);
+          return;
+        }
+
+        onAdd({
+          fileName: file.name,
+          fileSize: file.size,
+          totalPages,
+          text,
+          pages,
+          blobUrl,
+        });
+      } catch (parseError) {
+        URL.revokeObjectURL(blobUrl);
+        throw parseError;
       }
-
-      onAdd({
-        fileName: file.name,
-        fileSize: file.size,
-        totalPages,
-        text,
-        pages,
-      });
     } catch (err) {
       if (parseAbortRef.current) {
         return;

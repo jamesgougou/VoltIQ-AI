@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChatPanel } from "@/components/ChatPanel";
+import { PDFViewer, PDFViewerProvider } from "@/components/PDFViewer";
 import {
   cancelDocumentFromRag,
   clearRagIndex,
@@ -13,6 +14,10 @@ import {
   mergeIndexStates,
   pollIndexProgress,
 } from "@/lib/rag/client";
+import {
+  clearPdfDocumentCache,
+  destroyCachedPdfDocument,
+} from "@/lib/pdf/pdfDocumentCache";
 import { isAnyDocumentIndexing } from "@/lib/rag/indexProgress";
 import { DocumentIndexProgressCard } from "@/components/upload/DocumentIndexProgressCard";
 import { ImageUploadManager } from "@/components/upload/ImageUploadManager";
@@ -20,7 +25,7 @@ import { IndexingToast } from "@/components/upload/IndexingToast";
 import { PdfUploadManager } from "@/components/upload/PdfUploadManager";
 import { TextPasteManager } from "@/components/upload/TextPasteManager";
 import type { DocumentContextItem } from "@/types/documentContext";
-import type { PdfDocument, PdfParseResult } from "@/types/pdf";
+import type { PdfDocument, PdfParseResult, PdfSourceRef } from "@/types/pdf";
 import type { DocumentIndexState } from "@/types/rag";
 import { PASTED_TEXT_DOCUMENT_ID } from "@/types/rag";
 
@@ -51,20 +56,41 @@ export function UploadSection() {
   }
 
   function handlePdfAdd(result: PdfParseResult) {
+    const blobUrl = result.blobUrl;
+    if (!blobUrl) {
+      console.error("PDF upload is missing blobUrl; viewer will be unavailable.");
+      return;
+    }
+
     setPdfs((current) => [
       ...current,
       {
         ...result,
+        blobUrl,
         id: crypto.randomUUID(),
       },
     ]);
   }
 
   function handlePdfRemove(id: string) {
-    setPdfs((current) => current.filter((pdf) => pdf.id !== id));
+    setPdfs((current) => {
+      const target = current.find((pdf) => pdf.id === id);
+      if (target?.blobUrl) {
+        URL.revokeObjectURL(target.blobUrl);
+      }
+      void destroyCachedPdfDocument(id);
+      return current.filter((pdf) => pdf.id !== id);
+    });
   }
 
   async function handleClearAll() {
+    for (const pdf of pdfs) {
+      if (pdf.blobUrl) {
+        URL.revokeObjectURL(pdf.blobUrl);
+      }
+    }
+    void clearPdfDocumentCache();
+
     setPdfs([]);
     setHasImages(false);
     setHasText(false);
@@ -83,6 +109,15 @@ export function UploadSection() {
   }
 
   const hasDocuments = pdfs.length > 0 || hasImages || hasText;
+
+  const pdfSources = useMemo((): PdfSourceRef[] => {
+    return pdfs.map((pdf) => ({
+      documentId: pdf.id,
+      fileName: pdf.fileName,
+      blobUrl: pdf.blobUrl,
+      totalPages: pdf.totalPages,
+    }));
+  }, [pdfs]);
 
   const documents = useMemo((): DocumentContextItem[] => {
     const items: DocumentContextItem[] = pdfs.map((pdf) => ({
@@ -286,7 +321,14 @@ export function UploadSection() {
           pastedText,
         );
       } else {
-        setPdfs((current) => current.filter((pdf) => pdf.id !== documentId));
+        setPdfs((current) => {
+          const target = current.find((pdf) => pdf.id === documentId);
+          if (target?.blobUrl) {
+            URL.revokeObjectURL(target.blobUrl);
+          }
+          void destroyCachedPdfDocument(documentId);
+          return current.filter((pdf) => pdf.id !== documentId);
+        });
       }
 
       try {
@@ -471,83 +513,87 @@ export function UploadSection() {
   }, [indexStates]);
 
   return (
-    <section className="flex flex-col gap-6">
-      <ChatPanel
-        hasDocuments={hasDocuments}
-        documents={documents}
-        indexStates={indexStates}
-        indexingInProgress={isIndexing}
-      />
+    <PDFViewerProvider sources={pdfSources}>
+      <section className="flex flex-col gap-6">
+        <ChatPanel
+          hasDocuments={hasDocuments}
+          documents={documents}
+          indexStates={indexStates}
+          indexingInProgress={isIndexing}
+        />
 
-      <section
-        className="rounded-xl border border-slate-200 bg-white shadow-sm"
-        aria-labelledby="documents-heading"
-      >
-        <div className="flex items-center justify-between gap-3 border-b border-slate-100 px-4 py-3 sm:px-5">
-          <div>
-            <h2
-              id="documents-heading"
-              className="text-sm font-semibold text-slate-900"
+        <section
+          className="rounded-xl border border-slate-200 bg-white shadow-sm"
+          aria-labelledby="documents-heading"
+        >
+          <div className="flex items-center justify-between gap-3 border-b border-slate-100 px-4 py-3 sm:px-5">
+            <div>
+              <h2
+                id="documents-heading"
+                className="text-sm font-semibold text-slate-900"
+              >
+                Documents
+              </h2>
+              <p className="mt-0.5 text-xs text-slate-500">
+                PDFs, images, and pasted text used as AI context
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => void handleClearAll()}
+              className="shrink-0 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 transition-colors hover:border-red-200 hover:bg-red-50 hover:text-red-700 sm:text-sm"
             >
-              Documents
-            </h2>
-            <p className="mt-0.5 text-xs text-slate-500">
-              PDFs, images, and pasted text used as AI context
-            </p>
+              Clear All
+            </button>
           </div>
-          <button
-            type="button"
-            onClick={() => void handleClearAll()}
-            className="shrink-0 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 transition-colors hover:border-red-200 hover:bg-red-50 hover:text-red-700 sm:text-sm"
-          >
-            Clear All
-          </button>
-        </div>
 
-        <div className="grid gap-3 p-3 sm:p-4 lg:grid-cols-3">
-          <PdfUploadManager
-            key={`pdf-${resetKey}`}
-            pdfs={pdfs}
-            indexStates={indexStates}
-            onAdd={handlePdfAdd}
-            onRemove={handlePdfRemove}
-            onRetry={retryDocument}
-            onCancel={(documentId) => void cancelDocument(documentId)}
-            onParseCancelled={() =>
-              setToastMessage("Document indexing cancelled.")
-            }
-          />
-          <ImageUploadManager
-            key={`images-${resetKey}`}
-            onHasContentChange={setHasImages}
-          />
-          <div className="space-y-3">
-            <TextPasteManager
-              key={`text-${resetKey}`}
-              onHasContentChange={setHasText}
-              onTextChange={setPastedText}
+          <div className="grid gap-3 p-3 sm:p-4 lg:grid-cols-3">
+            <PdfUploadManager
+              key={`pdf-${resetKey}`}
+              pdfs={pdfs}
+              indexStates={indexStates}
+              onAdd={handlePdfAdd}
+              onRemove={handlePdfRemove}
+              onRetry={retryDocument}
+              onCancel={(documentId) => void cancelDocument(documentId)}
+              onParseCancelled={() =>
+                setToastMessage("Document indexing cancelled.")
+              }
             />
-            {pastedText.trim() && indexStates[PASTED_TEXT_DOCUMENT_ID] && (
-              <DocumentIndexProgressCard
-                filename="Pasted Text"
-                state={indexStates[PASTED_TEXT_DOCUMENT_ID]}
-                onRetry={() => retryDocument(PASTED_TEXT_DOCUMENT_ID)}
-                onCancel={
-                  indexStates[PASTED_TEXT_DOCUMENT_ID]?.status === "indexing"
-                    ? () => void cancelDocument(PASTED_TEXT_DOCUMENT_ID)
-                    : undefined
-                }
-                compact
+            <ImageUploadManager
+              key={`images-${resetKey}`}
+              onHasContentChange={setHasImages}
+            />
+            <div className="space-y-3">
+              <TextPasteManager
+                key={`text-${resetKey}`}
+                onHasContentChange={setHasText}
+                onTextChange={setPastedText}
               />
-            )}
+              {pastedText.trim() && indexStates[PASTED_TEXT_DOCUMENT_ID] && (
+                <DocumentIndexProgressCard
+                  filename="Pasted Text"
+                  state={indexStates[PASTED_TEXT_DOCUMENT_ID]}
+                  onRetry={() => retryDocument(PASTED_TEXT_DOCUMENT_ID)}
+                  onCancel={
+                    indexStates[PASTED_TEXT_DOCUMENT_ID]?.status === "indexing"
+                      ? () => void cancelDocument(PASTED_TEXT_DOCUMENT_ID)
+                      : undefined
+                  }
+                  compact
+                />
+              )}
+            </div>
           </div>
-        </div>
-      </section>
+        </section>
 
-      <IndexingToast
-        message={toastMessage}
-        onDismiss={() => setToastMessage(null)}
-      />
-    </section>
+        <IndexingToast
+          message={toastMessage}
+          onDismiss={() => setToastMessage(null)}
+        />
+
+        <PDFViewer />
+      </section>
+    </PDFViewerProvider>
   );
 }

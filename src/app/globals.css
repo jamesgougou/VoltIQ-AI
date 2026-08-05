@@ -69,3 +69,54 @@ body {
   box-decoration-break: clone;
   -webkit-box-decoration-break: clone;
 }
+
+/* Interactive PDF Viewer */
+.pdf-page {
+  position: relative;
+}
+
+.pdf-text-layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  opacity: 0.2;
+  line-height: 1;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+  transform-origin: 0 0;
+  z-index: 2;
+}
+
+.pdf-text-layer span,
+.pdf-text-layer br {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0% 0%;
+}
+
+.pdf-highlight-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.pdf-chunk-highlight {
+  position: absolute;
+  border-radius: 2px;
+  background: rgb(253 224 71 / 0.45);
+  box-shadow: inset 0 0 0 1px rgb(234 179 8 / 0.35);
+}
+
+.pdf-search-highlight {
+  position: absolute;
+  border-radius: 2px;
+  background: rgb(251 146 60 / 0.35);
+}
+
+.pdf-search-highlight.is-active {
+  background: rgb(249 115 22 / 0.55);
+  box-shadow: inset 0 0 0 1px rgb(234 88 12 / 0.5);
+}
