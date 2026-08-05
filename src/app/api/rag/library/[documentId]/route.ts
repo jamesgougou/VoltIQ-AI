@@ -28,6 +28,11 @@ export async function GET(_request: Request, context: RouteContext) {
       totalPages: document.totalPages,
       indexedAt: document.indexedAt,
       hasPdf: document.hasPdf,
+      hasImage: document.hasImage,
+      sourceKind: document.sourceKind,
+      mimeType: document.mimeType,
+      ocrText: document.ocrText,
+      description: document.description,
       text: document.text,
       pages: document.pages,
     });

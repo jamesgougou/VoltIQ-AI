@@ -16,8 +16,10 @@ import {
   clearLibraryDocuments,
   deleteLibraryDocument,
   getLibraryDocument,
+  libraryHasImage,
   libraryHasPdf,
   listLibraryDocumentIds,
+  readLibraryImage,
   saveLibraryExtracted,
 } from "@/lib/rag/libraryStore";
 import {
@@ -27,10 +29,12 @@ import {
 } from "@/lib/rag/libraryMeta";
 import { ragDebug, ragError, ragLog } from "@/lib/rag/logger";
 import { getVectorStore, StorageWriteError } from "@/lib/rag/store";
+import { analyzeElectricalImage } from "@/lib/rag/vision";
 import type {
   DocumentIndexState,
   IndexDocumentRequest,
   IndexDocumentResult,
+  IndexImageRequest,
   LibraryDocumentSummary,
   RetrievedChunk,
   StoredDocumentChunk,
@@ -215,6 +219,16 @@ export async function indexDocument(
         indexedAt: reusable.indexedAt ?? new Date().toISOString(),
         text: reuseText,
         pages: reusePages,
+        sourceKind:
+          request.sourceKind ??
+          reusable.sourceKind ??
+          existingLibrary?.sourceKind,
+        mimeType: reusable.mimeType ?? existingLibrary?.mimeType,
+        ocrText: request.ocrText ?? reusable.ocrText ?? existingLibrary?.ocrText,
+        description:
+          request.description ??
+          reusable.description ??
+          existingLibrary?.description,
       });
 
       await vectorStore.updateDocumentRecord(reusable.documentId, {
@@ -222,6 +236,10 @@ export async function indexDocument(
         totalPages:
           request.totalPages ?? reusable.totalPages ?? extractedPageCount,
         hasPdf: await libraryHasPdf(reusable.documentId),
+        hasImage: await libraryHasImage(reusable.documentId),
+        sourceKind: request.sourceKind ?? reusable.sourceKind,
+        ocrText: request.ocrText ?? reusable.ocrText,
+        description: request.description ?? reusable.description,
       });
 
       ragLog(
@@ -258,6 +276,7 @@ export async function indexDocument(
       documentName,
       text,
       pages: request.pages,
+      sourceKind: request.sourceKind,
     });
 
     ragLog(
@@ -368,6 +387,7 @@ export async function indexDocument(
 
     const indexedAt = new Date().toISOString();
     const hasPdf = await libraryHasPdf(documentId);
+    const hasImage = await libraryHasImage(documentId);
     const pages = request.pages ?? [];
     // Persist page text for session restore; avoid requiring a second full-doc join at index time.
     const persistedText =
@@ -387,6 +407,15 @@ export async function indexDocument(
         totalPages: request.totalPages ?? extractedPageCount,
         indexedAt,
         hasPdf,
+        hasImage,
+        sourceKind: request.sourceKind,
+        mimeType: request.mimeType,
+        ocrText: request.ocrText,
+        description: request.description,
+        documentType:
+          request.sourceKind === "image"
+            ? "Image"
+            : inferDocumentType(documentName),
       },
       signal,
     );
@@ -400,6 +429,10 @@ export async function indexDocument(
       indexedAt,
       text: persistedText,
       pages,
+      sourceKind: request.sourceKind,
+      mimeType: request.mimeType,
+      ocrText: request.ocrText,
+      description: request.description,
     });
 
     await vectorStore.verifyDocumentStorage(documentId, storedChunks.length);
@@ -466,6 +499,152 @@ export async function cancelIndexedDocument(documentId: string): Promise<void> {
   ragLog("cancel", `Removed cancelled document from index: ${documentId}.`);
 }
 
+/**
+ * Vision + OCR analysis, then index into the shared RAG store as an image document.
+ * Reuses existing chunk/embed/persist path — PDF indexing is unchanged.
+ */
+export async function indexImageDocument(
+  request: IndexImageRequest,
+  signal?: AbortSignal,
+): Promise<IndexDocumentResult> {
+  const {
+    documentId,
+    documentName,
+    contentHash,
+    fileSize,
+    mimeType,
+    forceReanalyze,
+  } = request;
+  const vectorStore = getVectorStore();
+  const statusStore = getIndexStatusStore();
+
+  ragLog("upload", `Indexing image: ${documentName} (${documentId})`);
+
+  const existingById = await vectorStore.getDocumentRecord(documentId);
+  const existingByHash =
+    await vectorStore.findDocumentByContentHash(contentHash);
+  const reusable =
+    existingById?.contentHash === contentHash
+      ? existingById
+      : existingByHash;
+
+  if (reusable && !forceReanalyze) {
+    try {
+      const storedChunkCount = await vectorStore.getStoredChunkCount(
+        reusable.documentId,
+      );
+      await vectorStore.verifyDocumentStorage(
+        reusable.documentId,
+        storedChunkCount,
+      );
+
+      await statusStore.setStatus(
+        reusable.documentId,
+        reusable.filename || documentName,
+        "ready",
+        {
+          chunkCount: storedChunkCount,
+          stage: "ready",
+          totalChunks: storedChunkCount,
+        },
+      );
+
+      ragLog(
+        "ready",
+        `Reusing existing image index for ${documentName}: ${reusable.documentId} (no re-vision / re-embed).`,
+      );
+
+      return {
+        documentId: reusable.documentId,
+        chunkCount: storedChunkCount,
+        skipped: true,
+        reusedExisting: reusable.documentId !== documentId,
+        status: "ready",
+      };
+    } catch {
+      ragLog(
+        "store",
+        `Existing image index for hash ${contentHash.slice(0, 8)}… failed verification; re-analysing.`,
+      );
+    }
+  }
+
+  await statusStore.setStatus(documentId, documentName, "indexing", {
+    stage: "uploading",
+  });
+
+  try {
+    assertNotCancelled(signal);
+
+    const bytes = await readLibraryImage(documentId);
+    if (!bytes?.length) {
+      throw new Error(
+        "Image bytes were not found in the library. Upload the image and try again.",
+      );
+    }
+
+    await statusStore.updateProgress(documentId, { stage: "analysing" });
+    ragLog("extract", `Analysing image with vision model: ${documentName}`);
+
+    const analysis = await analyzeElectricalImage({
+      bytes,
+      mimeType,
+      filename: documentName,
+      signal,
+    });
+
+    assertNotCancelled(signal);
+    await statusStore.updateProgress(documentId, { stage: "extracting" });
+
+    // Force a fresh embed path after re-analysis (same file hash).
+    if (forceReanalyze) {
+      await vectorStore.deleteDocument(documentId);
+    }
+
+    return indexDocument(
+      {
+        documentId,
+        documentName,
+        contentHash,
+        text: analysis.indexText,
+        fileSize,
+        totalPages: 1,
+        sourceKind: "image",
+        mimeType,
+        ocrText: analysis.ocrText,
+        description: analysis.description,
+      },
+      signal,
+    );
+  } catch (error) {
+    if (isCancellationError(error) || signal?.aborted) {
+      ragLog("cancel", `Image indexing cancelled for ${documentName}.`);
+      await vectorStore.deleteDocument(documentId);
+      await statusStore.removeStatus(documentId);
+      throw new IndexCancelledError();
+    }
+
+    const message =
+      error instanceof Error
+        ? error.message
+        : "Unable to analyse and index this image.";
+
+    await statusStore.setStatus(documentId, documentName, "failed", {
+      error: message,
+      stage: "failed",
+    });
+    ragError("failed", `Image indexing failed for ${documentName}: ${message}`, error);
+
+    return {
+      documentId,
+      chunkCount: 0,
+      skipped: false,
+      status: "failed",
+      error: message,
+    };
+  }
+}
+
 export async function deleteIndexedDocument(documentId: string): Promise<void> {
   // Deleting while indexing must cancel first so both never write concurrently.
   cancelIndexOperation(documentId);
@@ -495,6 +674,10 @@ export async function listLibraryDocuments(): Promise<LibraryDocumentSummary[]> 
     const libraryDoc = await getLibraryDocument(record.documentId);
     const hasPdf =
       record.hasPdf ?? libraryDoc?.hasPdf ?? (await libraryHasPdf(record.documentId));
+    const hasImage =
+      record.hasImage ??
+      libraryDoc?.hasImage ??
+      (await libraryHasImage(record.documentId));
 
     const embeddingModel = record.embeddingModel;
     const requiresReindex = documentNeedsReindex(embeddingModel);
@@ -508,6 +691,14 @@ export async function listLibraryDocuments(): Promise<LibraryDocumentSummary[]> 
       indexedAt:
         record.indexedAt ?? libraryDoc?.indexedAt ?? status?.updatedAt ?? "",
       hasPdf,
+      hasImage,
+      sourceKind:
+        record.sourceKind ??
+        libraryDoc?.sourceKind ??
+        (hasImage ? "image" : hasPdf ? "pdf" : "text"),
+      mimeType: record.mimeType ?? libraryDoc?.mimeType,
+      ocrText: record.ocrText ?? libraryDoc?.ocrText,
+      description: record.description ?? libraryDoc?.description,
       status: status?.status ?? "failed",
       chunkCount: status?.chunkCount ?? record.chunkIds.length,
       error: status?.error,
@@ -544,6 +735,11 @@ export async function listLibraryDocuments(): Promise<LibraryDocumentSummary[]> 
       totalPages: libraryDoc.totalPages,
       indexedAt: libraryDoc.indexedAt,
       hasPdf: libraryDoc.hasPdf,
+      hasImage: libraryDoc.hasImage,
+      sourceKind: libraryDoc.sourceKind,
+      mimeType: libraryDoc.mimeType,
+      ocrText: libraryDoc.ocrText,
+      description: libraryDoc.description,
       status: status?.status ?? "failed",
       chunkCount: status?.chunkCount,
       error: status?.error,
@@ -608,6 +804,20 @@ export async function retrieveWithHybridSearch(
       records.map((record) => [record.documentId, record]),
     );
 
+    // Enrich chunks with sourceKind / image metadata for prompt splitting.
+    const enrichedChunks: RetrievedChunk[] = result.chunks.map((chunk) => {
+      const record = recordById.get(chunk.documentId);
+      const sourceKind =
+        chunk.sourceKind ??
+        record?.sourceKind ??
+        (record?.hasImage ? "image" : "pdf");
+
+      return {
+        ...chunk,
+        sourceKind,
+      };
+    });
+
     const searchedNames = (
       documentIds?.length
         ? documentIds.map(
@@ -624,24 +834,30 @@ export async function retrieveWithHybridSearch(
         searchedNames.length > 0 ? searchedNames.join("\n") : "(none)"
       }`,
     );
-    console.info(`Chunks retrieved:\n${result.chunks.length}`);
+    console.info(`Chunks retrieved:\n${enrichedChunks.length}`);
     console.info(`Search time:\n${searchTimeMs} ms`);
 
     ragLog(
       "retrieve",
-      `Retrieved ${result.chunks.length} chunk(s) for query "${trimmedQuery.slice(0, 80)}" in ${searchTimeMs}ms.`,
+      `Retrieved ${enrichedChunks.length} chunk(s) for query "${trimmedQuery.slice(0, 80)}" in ${searchTimeMs}ms.`,
     );
     ragDebug("Retrieval results", {
-      retrievedChunkCount: result.chunks.length,
-      topScore: result.chunks[0]?.similarityScore,
+      retrievedChunkCount: enrichedChunks.length,
+      topScore: enrichedChunks[0]?.similarityScore,
       insufficientRetrieval: result.insufficientRetrieval,
       intent: result.profile.intent,
       documentIds,
       searchTimeMs,
+      imageChunks: enrichedChunks.filter((chunk) => chunk.sourceKind === "image")
+        .length,
+      pdfChunks: enrichedChunks.filter((chunk) => chunk.sourceKind !== "image")
+        .length,
     });
 
     // Track recently used documents (meta-only — does not rewrite chunk store).
-    const usedIds = [...new Set(result.chunks.map((chunk) => chunk.documentId))];
+    const usedIds = [
+      ...new Set(enrichedChunks.map((chunk) => chunk.documentId)),
+    ];
     if (usedIds.length > 0) {
       const usedAt = new Date().toISOString();
       await getVectorStore().updateDocumentRecordsMeta(
@@ -652,7 +868,10 @@ export async function retrieveWithHybridSearch(
       );
     }
 
-    return result;
+    return {
+      ...result,
+      chunks: enrichedChunks,
+    };
   } catch (error) {
     ragError("retrieve", "Hybrid retrieval failed.", error);
     throw new RetrievalError(formatEmbeddingError(error));

@@ -1,4 +1,8 @@
-import type { DocumentChunk, PdfPageText } from "@/lib/rag/types";
+import type {
+  DocumentChunk,
+  DocumentSourceKind,
+  PdfPageText,
+} from "@/lib/rag/types";
 import {
   CHUNK_OVERLAP,
   MAX_CHUNK_SIZE,
@@ -11,6 +15,7 @@ type ChunkSource = {
   filename: string;
   text: string;
   page?: number;
+  sourceKind?: DocumentSourceKind;
 };
 
 function createChunkId(documentId: string, index: number): string {
@@ -71,6 +76,7 @@ function chunkPlainText(
       page: source.page,
       chunkIndex,
       text: fullText,
+      sourceKind: source.sourceKind,
     });
 
     chunkIndex += 1;
@@ -111,10 +117,12 @@ export function chunkDocument(input: {
   documentName: string;
   text: string;
   pages?: PdfPageText[];
+  sourceKind?: DocumentSourceKind;
 }): DocumentChunk[] {
   const sourceBase = {
     documentId: input.documentId,
     filename: input.documentName,
+    sourceKind: input.sourceKind,
   };
 
   if (input.pages?.length) {

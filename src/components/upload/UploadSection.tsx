@@ -12,16 +12,20 @@ import {
   hashDocumentContent,
   hashFileBytes,
   indexDocumentInRag,
+  indexImageInRag,
   mergeIndexStates,
   pollIndexProgress,
 } from "@/lib/rag/client";
 import {
   bulkLibraryAction,
+  createLibraryImageBlobUrl,
   createLibraryPdfBlobUrl,
   fetchDocumentLibrary,
   fetchLibraryDocument,
+  libraryImageFileUrl,
   lookupLibraryByHash,
   patchLibraryDocumentMeta,
+  uploadLibraryImage,
   uploadLibraryPdf,
 } from "@/lib/rag/libraryClient";
 import {
@@ -42,6 +46,7 @@ import { IndexingToast } from "@/components/upload/IndexingToast";
 import { PdfUploadManager } from "@/components/upload/PdfUploadManager";
 import { TextPasteManager } from "@/components/upload/TextPasteManager";
 import type { DocumentContextItem } from "@/types/documentContext";
+import type { LibraryImageDocument } from "@/types/image";
 import type { PdfDocument, PdfParseResult, PdfSourceRef } from "@/types/pdf";
 import type { DocumentIndexState } from "@/types/rag";
 import { PASTED_TEXT_DOCUMENT_ID } from "@/types/rag";
@@ -99,8 +104,8 @@ function DocumentLibraryPanel({
 
 export function UploadSection() {
   const [pdfs, setPdfs] = useState<PdfDocument[]>([]);
+  const [images, setImages] = useState<LibraryImageDocument[]>([]);
   const [resetKey, setResetKey] = useState(0);
-  const [hasImages, setHasImages] = useState(false);
   const [hasText, setHasText] = useState(false);
   const [pastedText, setPastedText] = useState("");
   const [indexStates, setIndexStates] = useState<
@@ -253,16 +258,123 @@ export function UploadSection() {
     });
   }
 
+  async function handleImageAdd(files: File[]) {
+    for (const file of files) {
+      const contentHash = await hashFileBytes(file);
+      const existing = await lookupLibraryByHash(contentHash);
+
+      if (existing.found && existing.documentId && existing.status === "ready") {
+        if (images.some((image) => image.id === existing.documentId)) {
+          setToastMessage(DUPLICATE_LIBRARY_MESSAGE);
+          continue;
+        }
+
+        const previewUrl =
+          (await createLibraryImageBlobUrl(existing.documentId)) ??
+          URL.createObjectURL(file);
+
+        skipAutoIndexIdsRef.current.add(existing.documentId);
+        indexedHashesRef.current.set(existing.documentId, contentHash);
+
+        const library = await fetchDocumentLibrary();
+        const summary = library.find(
+          (doc) => doc.documentId === existing.documentId,
+        );
+
+        setImages((current) => [
+          ...current,
+          {
+            id: existing.documentId!,
+            fileName: existing.filename ?? file.name,
+            fileSize: existing.fileSize ?? file.size,
+            mimeType: summary?.mimeType || file.type || "image/jpeg",
+            previewUrl,
+            contentHash,
+            indexedAt: existing.indexedAt,
+            enabled: summary?.enabled !== false,
+            ocrText: summary?.ocrText,
+            description: summary?.description,
+            chunkCount: existing.chunkCount ?? summary?.chunkCount,
+          },
+        ]);
+
+        updateIndexState({
+          documentId: existing.documentId,
+          filename: existing.filename ?? file.name,
+          status: "ready",
+          stage: "ready",
+          chunkCount: existing.chunkCount,
+          totalChunks: existing.chunkCount,
+          progressPercent: 100,
+          updatedAt: new Date().toISOString(),
+        });
+
+        setToastMessage(DUPLICATE_LIBRARY_MESSAGE);
+        continue;
+      }
+
+      const documentId = crypto.randomUUID();
+      const previewUrl = URL.createObjectURL(file);
+
+      setImages((current) => [
+        ...current,
+        {
+          id: documentId,
+          fileName: file.name,
+          fileSize: file.size,
+          mimeType: file.type || "image/jpeg",
+          previewUrl,
+          contentHash,
+          enabled: true,
+        },
+      ]);
+
+      try {
+        await uploadLibraryImage(documentId, file, file.type || "image/jpeg");
+      } catch (error) {
+        console.error("Failed to persist image bytes:", error);
+        setToastMessage(
+          error instanceof Error
+            ? error.message
+            : "Unable to save the uploaded image.",
+        );
+      }
+    }
+  }
+
+  function handleImageRemove(id: string) {
+    setImages((current) => {
+      const target = current.find((image) => image.id === id);
+      if (target?.previewUrl.startsWith("blob:")) {
+        URL.revokeObjectURL(target.previewUrl);
+      }
+      return current.filter((image) => image.id !== id);
+    });
+  }
+
+  function handleImageOpen(id: string) {
+    const image = images.find((item) => item.id === id);
+    if (!image) {
+      return;
+    }
+    window.open(image.previewUrl || libraryImageFileUrl(id), "_blank", "noopener,noreferrer");
+  }
+
   async function handleClearAll() {
     for (const pdf of pdfs) {
       if (pdf.blobUrl) {
         URL.revokeObjectURL(pdf.blobUrl);
       }
     }
+    for (const image of images) {
+      if (image.previewUrl.startsWith("blob:")) {
+        URL.revokeObjectURL(image.previewUrl);
+      }
+    }
     void clearPdfDocumentCache();
 
     setPdfs([]);
-    setHasImages(false);
+    setImages([]);
     setHasText(false);
     setPastedText("");
     setIndexStates({});
@@ -278,7 +390,7 @@ export function UploadSection() {
     }
   }
 
-  const hasDocuments = pdfs.length > 0 || hasImages || hasText;
+  const hasDocuments = pdfs.length > 0 || images.length > 0 || hasText;
 
   const pdfSources = useMemo((): PdfSourceRef[] => {
     return pdfs.map((pdf) => ({
@@ -290,14 +402,24 @@ export function UploadSection() {
   }, [pdfs]);
 
   const documents = useMemo((): DocumentContextItem[] => {
-    const items: DocumentContextItem[] = pdfs.map((pdf) => ({
-      id: pdf.id,
-      name: pdf.fileName,
-      text: pdf.text,
-      totalPages: pdf.totalPages,
-      fileSize: pdf.fileSize,
-      enabled: pdf.enabled !== false,
-    }));
+    const items: DocumentContextItem[] = [
+      ...pdfs.map((pdf) => ({
+        id: pdf.id,
+        name: pdf.fileName,
+        text: pdf.text,
+        totalPages: pdf.totalPages,
+        fileSize: pdf.fileSize,
+        enabled: pdf.enabled !== false,
+      })),
+      ...images.map((image) => ({
+        id: image.id,
+        name: image.fileName,
+        text: image.description || image.ocrText || "",
+        ocrText: image.ocrText,
+        fileSize: image.fileSize,
+        enabled: image.enabled !== false,
+      })),
+    ];
 
     if (pastedText.trim()) {
       items.push({
@@ -309,14 +431,15 @@ export function UploadSection() {
     }
 
     return items;
-  }, [pdfs, pastedText]);
+  }, [pdfs, images, pastedText]);
 
-  const textDocumentIds = useMemo(
-    () =>
-      documents
-        .filter((document) => document.text.trim().length > 0)
-        .map((document) => document.id),
-    [documents],
+  const managedDocumentIds = useMemo(
+    () => [
+      ...pdfs.map((pdf) => pdf.id),
+      ...images.map((image) => image.id),
+      ...(pastedText.trim() ? [PASTED_TEXT_DOCUMENT_ID] : []),
+    ],
+    [pdfs, images, pastedText],
   );
 
   const retrievalDocumentIds = useMemo(
@@ -331,10 +454,10 @@ export function UploadSection() {
     [documents, retrievalScope],
   );
 
-  const isIndexing = isAnyDocumentIndexing(indexStates, textDocumentIds);
+  const isIndexing = isAnyDocumentIndexing(indexStates, managedDocumentIds);
   const isRetrievalScopeIndexing = isAnyDocumentIndexing(
     indexStates,
-    retrievalDocumentIds.length > 0 ? retrievalDocumentIds : textDocumentIds,
+    retrievalDocumentIds.length > 0 ? retrievalDocumentIds : managedDocumentIds,
   );
 
   // Keep current-document scope pointed at a valid enabled PDF.
@@ -547,6 +670,151 @@ export function UploadSection() {
     [],
   );
 
+  const indexImageEntry = useCallback(
+    async (
+      image: LibraryImageDocument,
+      options?: { forceReanalyze?: boolean },
+    ) => {
+      if (indexingInFlightRef.current.has(image.id)) {
+        return;
+      }
+
+      if (skipAutoIndexIdsRef.current.has(image.id) && !options?.forceReanalyze) {
+        skipAutoIndexIdsRef.current.delete(image.id);
+        return;
+      }
+
+      indexingInFlightRef.current.add(image.id);
+      const pollController = new AbortController();
+      const fetchController = new AbortController();
+      indexAbortControllersRef.current.set(image.id, fetchController);
+
+      updateIndexState(
+        createClientIndexState(image.id, image.fileName, "uploading"),
+      );
+
+      const pollPromise = pollIndexProgress(
+        image.id,
+        updateIndexState,
+        pollController.signal,
+      );
+
+      try {
+        const contentHash = image.contentHash ?? (await hashFileBytes(
+          await fetch(image.previewUrl).then((response) => response.blob()),
+        ));
+
+        if (
+          !options?.forceReanalyze &&
+          indexedHashesRef.current.get(image.id) === contentHash
+        ) {
+          const statuses = await fetchDocumentIndexStatuses([image.id]);
+          if (statuses[0]?.status === "ready") {
+            updateIndexState(statuses[0]);
+            return;
+          }
+        }
+
+        if (cancelledDocumentIdsRef.current.has(image.id)) {
+          return;
+        }
+
+        const result = await indexImageInRag(
+          {
+            documentId: image.id,
+            documentName: image.fileName,
+            contentHash,
+            fileSize: image.fileSize,
+            mimeType: image.mimeType,
+            forceReanalyze: options?.forceReanalyze,
+          },
+          fetchController.signal,
+        );
+
+        if (cancelledDocumentIdsRef.current.has(image.id)) {
+          return;
+        }
+
+        const resolvedId = result.documentId;
+
+        updateIndexState({
+          documentId: resolvedId,
+          filename: image.fileName,
+          status: result.status,
+          stage: result.status === "ready" ? "ready" : "failed",
+          chunkCount: result.chunkCount,
+          totalChunks: result.chunkCount,
+          embeddedChunks: result.chunkCount,
+          progressPercent: result.status === "ready" ? 100 : 0,
+          error: result.error,
+          updatedAt: new Date().toISOString(),
+        });
+
+        if (result.status === "ready") {
+          indexedHashesRef.current.set(resolvedId, contentHash);
+
+          const library = await fetchDocumentLibrary();
+          const summary = library.find((doc) => doc.documentId === resolvedId);
+
+          setImages((current) =>
+            current.map((item) =>
+              item.id === image.id || item.id === resolvedId
+                ? {
+                    ...item,
+                    id: resolvedId,
+                    contentHash,
+                    indexedAt:
+                      summary?.indexedAt || new Date().toISOString(),
+                    chunkCount: summary?.chunkCount ?? result.chunkCount,
+                    ocrText: summary?.ocrText ?? item.ocrText,
+                    description: summary?.description ?? item.description,
+                  }
+                : item,
+            ),
+          );
+
+          if (result.skipped || result.reusedExisting) {
+            setToastMessage(DUPLICATE_LIBRARY_MESSAGE);
+          }
+        } else {
+          indexedHashesRef.current.delete(resolvedId);
+        }
+      } catch (error) {
+        if (cancelledDocumentIdsRef.current.has(image.id)) {
+          return;
+        }
+
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Unable to analyse this image.";
+
+        if (message === "Document indexing cancelled.") {
+          return;
+        }
+
+        indexedHashesRef.current.delete(image.id);
+        updateIndexState({
+          documentId: image.id,
+          filename: image.fileName,
+          status: "failed",
+          stage: "failed",
+          progressPercent: 0,
+          error: message,
+          updatedAt: new Date().toISOString(),
+        });
+        console.error(`[RAG:client] Failed to index image ${image.fileName}:`, error);
+      } finally {
+        pollController.abort();
+        await pollPromise;
+        indexAbortControllersRef.current.delete(image.id);
+        cancelledDocumentIdsRef.current.delete(image.id);
+        indexingInFlightRef.current.delete(image.id);
+      }
+    },
+    [],
+  );
+
   const retryDocument = useCallback(
     (documentId: string) => {
       indexedHashesRef.current.delete(documentId);
@@ -568,6 +836,13 @@ export function UploadSection() {
         return;
       }
 
+      const image = images.find((item) => item.id === documentId);
+      if (image) {
+        skipAutoIndexIdsRef.current.delete(image.id);
+        void indexImageEntry(image, { forceReanalyze: true });
+        return;
+      }
+
       if (documentId === PASTED_TEXT_DOCUMENT_ID && pastedText.trim()) {
         void indexDocumentEntry(
           PASTED_TEXT_DOCUMENT_ID,
@@ -576,7 +851,7 @@ export function UploadSection() {
         );
       }
     },
-    [indexDocumentEntry, pdfs, pastedText],
+    [indexDocumentEntry, indexImageEntry, pdfs, images, pastedText],
   );
 
   const cancelDocument = useCallback(
@@ -598,6 +873,14 @@ export function UploadSection() {
         cancelledPastedTextHashRef.current = await hashDocumentContent(
           pastedText,
         );
+      } else if (images.some((image) => image.id === documentId)) {
+        setImages((current) => {
+          const target = current.find((image) => image.id === documentId);
+          if (target?.previewUrl.startsWith("blob:")) {
+            URL.revokeObjectURL(target.previewUrl);
+          }
+          return current.filter((image) => image.id !== documentId);
+        });
       } else {
         setPdfs((current) => {
           const target = current.find((pdf) => pdf.id === documentId);
@@ -617,7 +900,7 @@ export function UploadSection() {
 
       setToastMessage("Document indexing cancelled.");
     },
-    [pastedText],
+    [pastedText, images],
   );
 
   useEffect(() => {
@@ -635,7 +918,8 @@ export function UploadSection() {
           return;
         }
 
-        const hydrated: PdfDocument[] = [];
+        const hydratedPdfs: PdfDocument[] = [];
+        const hydratedImages: LibraryImageDocument[] = [];
         const nextStates: Record<string, DocumentIndexState> = {};
 
         for (const document of documents) {
@@ -643,16 +927,56 @@ export function UploadSection() {
             continue;
           }
 
-          const detail = await fetchLibraryDocument(document.documentId);
-          const blobUrl = await createLibraryPdfBlobUrl(document.documentId);
-
           skipAutoIndexIdsRef.current.add(document.documentId);
           indexedHashesRef.current.set(
             document.documentId,
             document.contentHash,
           );
 
-          hydrated.push({
+          nextStates[document.documentId] = {
+            documentId: document.documentId,
+            filename: document.filename,
+            status: document.status,
+            stage:
+              document.stage ??
+              (document.status === "ready" ? "ready" : undefined),
+            chunkCount: document.chunkCount,
+            totalChunks: document.chunkCount,
+            progressPercent: document.status === "ready" ? 100 : 0,
+            error: document.error,
+            updatedAt: document.indexedAt || new Date().toISOString(),
+          };
+
+          const isImage =
+            document.sourceKind === "image" ||
+            document.hasImage ||
+            document.documentType === "Image";
+
+          if (isImage) {
+            const previewUrl =
+              (await createLibraryImageBlobUrl(document.documentId)) ??
+              libraryImageFileUrl(document.documentId);
+
+            hydratedImages.push({
+              id: document.documentId,
+              fileName: document.filename,
+              fileSize: document.fileSize,
+              mimeType: document.mimeType || "image/jpeg",
+              previewUrl,
+              contentHash: document.contentHash,
+              indexedAt: document.indexedAt,
+              enabled: document.enabled !== false,
+              ocrText: document.ocrText,
+              description: document.description,
+              chunkCount: document.chunkCount,
+            });
+            continue;
+          }
+
+          const detail = await fetchLibraryDocument(document.documentId);
+          const blobUrl = await createLibraryPdfBlobUrl(document.documentId);
+
+          hydratedPdfs.push({
             id: document.documentId,
             fileName: document.filename,
             fileSize: document.fileSize,
@@ -678,34 +1002,33 @@ export function UploadSection() {
             chunkCount: document.chunkCount,
             requiresReindex: document.requiresReindex,
           });
-
-          nextStates[document.documentId] = {
-            documentId: document.documentId,
-            filename: document.filename,
-            status: document.status,
-            stage:
-              document.stage ??
-              (document.status === "ready" ? "ready" : undefined),
-            chunkCount: document.chunkCount,
-            totalChunks: document.chunkCount,
-            progressPercent: document.status === "ready" ? 100 : 0,
-            error: document.error,
-            updatedAt: document.indexedAt || new Date().toISOString(),
-          };
         }
 
         if (cancelled) {
           return;
         }
 
-        if (hydrated.length > 0) {
+        if (hydratedPdfs.length > 0) {
           setPdfs((current) => {
             const existingIds = new Set(current.map((pdf) => pdf.id));
-            const mergedLibrary = hydrated.filter(
+            const mergedLibrary = hydratedPdfs.filter(
               (pdf) => !existingIds.has(pdf.id),
             );
             return [...mergedLibrary, ...current];
           });
+        }
+
+        if (hydratedImages.length > 0) {
+          setImages((current) => {
+            const existingIds = new Set(current.map((image) => image.id));
+            const mergedLibrary = hydratedImages.filter(
+              (image) => !existingIds.has(image.id),
+            );
+            return [...mergedLibrary, ...current];
+          });
+        }
+
+        if (hydratedPdfs.length > 0 || hydratedImages.length > 0) {
           setIndexStates((current) => ({ ...nextStates, ...current }));
         }
       } catch (error) {
@@ -732,7 +1055,10 @@ export function UploadSection() {
         return;
       }
 
-      const currentIds = new Set(pdfs.map((pdf) => pdf.id));
+      const currentIds = new Set([
+        ...pdfs.map((pdf) => pdf.id),
+        ...images.map((image) => image.id),
+      ]);
 
       for (const documentId of [...indexedHashesRef.current.keys()]) {
         if (
@@ -787,7 +1113,46 @@ export function UploadSection() {
     return () => {
       cancelled = true;
     };
-  }, [pdfs, indexDocumentEntry, libraryReady]);
+  }, [pdfs, images, indexDocumentEntry, libraryReady]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function syncImageIndexes() {
+      if (!libraryReady) {
+        return;
+      }
+
+      for (const image of images) {
+        if (cancelled) {
+          return;
+        }
+
+        if (
+          image.contentHash &&
+          indexedHashesRef.current.get(image.id) === image.contentHash
+        ) {
+          const statuses = await fetchDocumentIndexStatuses([image.id]);
+          if (statuses[0]?.status === "ready") {
+            updateIndexState(statuses[0]);
+            continue;
+          }
+        }
+
+        if (indexingInFlightRef.current.has(image.id)) {
+          continue;
+        }
+
+        await indexImageEntry(image);
+      }
+    }
+
+    void syncImageIndexes();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [images, indexImageEntry, libraryReady]);
 
   useEffect(() => {
     let cancelled = false;
@@ -839,7 +1204,7 @@ export function UploadSection() {
   }, [pastedText, indexDocumentEntry]);
 
   useEffect(() => {
-    if (textDocumentIds.length === 0) {
+    if (managedDocumentIds.length === 0) {
       return;
     }
 
@@ -847,7 +1212,7 @@ export function UploadSection() {
     const pollInterval = isIndexing ? 500 : 2000;
 
     async function pollStatuses() {
-      const statuses = await fetchDocumentIndexStatuses(textDocumentIds);
+      const statuses = await fetchDocumentIndexStatuses(managedDocumentIds);
 
       if (cancelled || statuses.length === 0) {
         return;
@@ -882,7 +1247,7 @@ export function UploadSection() {
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [documents, textDocumentIds, isIndexing]);
+  }, [documents, managedDocumentIds, isIndexing]);
 
   useEffect(() => {
     for (const [documentId, state] of Object.entries(indexStates)) {
@@ -1086,7 +1451,13 @@ export function UploadSection() {
             />
             <ImageUploadManager
               key={`images-${resetKey}`}
-              onHasContentChange={setHasImages}
+              images={images}
+              indexStates={indexStates}
+              onAdd={(files) => void handleImageAdd(files)}
+              onRemove={handleImageRemove}
+              onOpen={handleImageOpen}
+              onRetry={retryDocument}
+              onCancel={(documentId) => void cancelDocument(documentId)}
             />
             <div className="space-y-3">
               <TextPasteManager

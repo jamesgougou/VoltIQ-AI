@@ -1,7 +1,7 @@
 import { getEmbeddingModel } from "@/lib/rag/embed";
 
 /** Bumped when the on-disk knowledge library schema/capabilities change. */
-export const KNOWLEDGE_BASE_VERSION = "4.7";
+export const KNOWLEDGE_BASE_VERSION = "4.8";
 
 export const LIBRARY_TAG_OPTIONS = [
   "Electrical",
@@ -38,6 +38,10 @@ export type RetrievalScope = {
 
 export function inferDocumentType(filename: string): string {
   const name = filename.toLowerCase();
+
+  if (/\.(png|jpe?g|webp|gif|bmp|heic)$/i.test(name)) {
+    return "Image";
+  }
 
   if (/\bas\s*\d+/i.test(filename) || name.includes("as/nzs")) {
     return "Standard";

@@ -11,6 +11,11 @@ export function getOpenAIModel(): string {
   return process.env.OPENAI_MODEL?.trim() || "gpt-5.5";
 }
 
+/** Vision-capable chat model; falls back to OPENAI_MODEL. */
+export function getOpenAIVisionModel(): string {
+  return process.env.OPENAI_VISION_MODEL?.trim() || getOpenAIModel();
+}
+
 export function isOpenAIConfigured(): boolean {
   return Boolean(getOpenAIApiKey());
 }

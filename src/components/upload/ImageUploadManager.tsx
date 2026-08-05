@@ -1,66 +1,88 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import {
   MAX_IMAGE_SIZE_BYTES,
   MAX_IMAGE_SIZE_LABEL,
   getImageSizeError,
 } from "@/lib/upload/limits";
+import type { LibraryImageDocument } from "@/types/image";
+import type { DocumentIndexState } from "@/types/rag";
+import { DocumentIndexProgressCard } from "./DocumentIndexProgressCard";
 import { AddButton, DeleteButton } from "./ManagerActions";
 import { ManagerSection } from "./ManagerSection";
 import { ImageIcon } from "./UploadIcons";
 
-type ImageItem = {
-  id: string;
-  name: string;
-  url: string;
-};
-
-function createImageItems(files: FileList | File[]): ImageItem[] {
-  return Array.from(files).map((file) => ({
-    id: `${file.name}-${file.size}-${file.lastModified}-${crypto.randomUUID()}`,
-    name: file.name,
-    url: URL.createObjectURL(file),
-  }));
-}
-
-function revokeUrls(items: ImageItem[]) {
-  for (const item of items) {
-    URL.revokeObjectURL(item.url);
-  }
-}
-
 type ImageUploadManagerProps = {
-  onHasContentChange?: (hasContent: boolean) => void;
+  images: LibraryImageDocument[];
+  indexStates?: Record<string, DocumentIndexState>;
+  onAdd: (files: File[]) => void | Promise<void>;
+  onRemove: (id: string) => void;
+  onOpen?: (id: string) => void;
+  onRetry?: (documentId: string) => void;
+  onCancel?: (documentId: string) => void;
 };
+
+function StatusPill({ state }: { state?: DocumentIndexState }) {
+  if (!state) {
+    return (
+      <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-500">
+        Pending
+      </span>
+    );
+  }
+
+  if (state.status === "ready") {
+    return (
+      <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700">
+        ✓ Ready
+      </span>
+    );
+  }
+
+  if (state.status === "failed") {
+    return (
+      <span className="rounded-full bg-red-50 px-2 py-0.5 text-[11px] font-medium text-red-700">
+        ❌ Failed
+      </span>
+    );
+  }
+
+  return (
+    <span className="rounded-full bg-violet-50 px-2 py-0.5 text-[11px] font-medium text-violet-700">
+      ⏳ Indexing
+    </span>
+  );
+}
+
+function formatUploadDate(value?: string): string | null {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleString(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+}
 
 export function ImageUploadManager({
-  onHasContentChange,
+  images,
+  indexStates = {},
+  onAdd,
+  onRemove,
+  onOpen,
+  onRetry,
+  onCancel,
 }: ImageUploadManagerProps) {
   const inputRef = useRef<HTMLInputElement>(null);
-  const imagesRef = useRef<ImageItem[]>([]);
-  const [images, setImages] = useState<ImageItem[]>([]);
   const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    imagesRef.current = images;
-  }, [images]);
-
-  useEffect(() => {
-    onHasContentChange?.(images.length > 0);
-  }, [images, onHasContentChange]);
-
-  useEffect(() => {
-    return () => {
-      revokeUrls(imagesRef.current);
-    };
-  }, []);
+  const [isAdding, setIsAdding] = useState(false);
 
   function openFilePicker() {
     inputRef.current?.click();
   }
 
-  function handleChange(event: React.ChangeEvent<HTMLInputElement>) {
+  async function handleChange(event: React.ChangeEvent<HTMLInputElement>) {
     const files = event.target.files;
     if (!files || files.length === 0) return;
 
@@ -87,7 +109,12 @@ export function ImageUploadManager({
     }
 
     if (accepted.length > 0) {
-      setImages((prev) => [...prev, ...createImageItems(accepted)]);
+      setIsAdding(true);
+      try {
+        await onAdd(accepted);
+      } finally {
+        setIsAdding(false);
+      }
     }
 
     if (inputRef.current) {
@@ -95,27 +122,20 @@ export function ImageUploadManager({
     }
   }
 
-  function handleRemove(id: string) {
-    setImages((prev) => {
-      const target = prev.find((item) => item.id === id);
-      if (target) URL.revokeObjectURL(target.url);
-      return prev.filter((item) => item.id !== id);
-    });
-  }
-
   return (
     <ManagerSection
       title={images.length > 0 ? `Images (${images.length})` : "Images"}
-      description={`Up to ${MAX_IMAGE_SIZE_LABEL} per image · PNG, JPG, WEBP`}
+      description={`Vision OCR · up to ${MAX_IMAGE_SIZE_LABEL} · PNG, JPG, WEBP`}
       icon={<ImageIcon />}
     >
       <input
         ref={inputRef}
         type="file"
-        accept="image/*"
+        accept="image/png,image/jpeg,image/jpg,image/webp,image/*"
         multiple
         className="sr-only"
-        onChange={handleChange}
+        disabled={isAdding}
+        onChange={(event) => void handleChange(event)}
       />
 
       {error && (
@@ -129,47 +149,123 @@ export function ImageUploadManager({
 
       {images.length === 0 ? (
         <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50/60 py-5 text-center">
-          <p className="text-sm text-slate-500">No images uploaded yet</p>
+          <p className="text-sm text-slate-500">No images in the library yet</p>
           <p className="mt-1 text-xs text-slate-400">
-            Up to {MAX_IMAGE_SIZE_LABEL} per image
+            Nameplates, switchboards, diagrams and labels become searchable
           </p>
           <div className="mt-3">
-            <AddButton label="Add Images" onClick={openFilePicker} />
+            <AddButton
+              label="Add Images"
+              onClick={openFilePicker}
+              disabled={isAdding}
+            />
           </div>
         </div>
       ) : (
         <div className="space-y-3">
-          <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-            {images.map((image) => (
-              <li
-                key={image.id}
-                className="group overflow-hidden rounded-lg border border-slate-200 bg-slate-50/60"
-              >
-                <div className="relative aspect-square bg-slate-100">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={image.url}
-                    alt={image.name}
-                    className="h-full w-full object-cover"
-                  />
-                </div>
-                <div className="flex items-center justify-between gap-2 px-2 py-2">
-                  <span
-                    className="min-w-0 flex-1 truncate text-xs font-medium text-slate-700"
-                    title={image.name}
-                  >
-                    {image.name}
-                  </span>
-                  <DeleteButton
-                    label={`Delete ${image.name}`}
-                    onClick={() => handleRemove(image.id)}
-                  />
-                </div>
-              </li>
-            ))}
+          <ul className="space-y-3">
+            {images.map((image) => {
+              const state = indexStates[image.id];
+              const uploadedLabel = formatUploadDate(
+                image.indexedAt ?? state?.updatedAt,
+              );
+
+              return (
+                <li key={image.id} className="space-y-2">
+                  <div className="rounded-lg border border-slate-200 bg-slate-50/60 px-3 py-2.5">
+                    <div className="flex items-start gap-3">
+                      <button
+                        type="button"
+                        onClick={() => onOpen?.(image.id)}
+                        className="relative h-16 w-16 shrink-0 overflow-hidden rounded-md border border-slate-200 bg-slate-100"
+                        aria-label={`Open ${image.fileName}`}
+                      >
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={image.previewUrl}
+                          alt={image.fileName}
+                          className="h-full w-full object-cover"
+                        />
+                      </button>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p
+                            className="truncate text-sm font-medium text-slate-800"
+                            title={image.fileName}
+                          >
+                            {image.fileName}
+                          </p>
+                          <StatusPill state={state} />
+                        </div>
+                        <p className="mt-0.5 text-xs text-slate-500">
+                          {uploadedLabel
+                            ? `Uploaded ${uploadedLabel}`
+                            : "Uploading…"}
+                          {image.chunkCount != null
+                            ? ` · ${image.chunkCount} chunks`
+                            : null}
+                        </p>
+                      </div>
+                      <DeleteButton
+                        label={`Delete ${image.fileName}`}
+                        onClick={() => onRemove(image.id)}
+                      />
+                    </div>
+
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {onOpen && (
+                        <button
+                          type="button"
+                          onClick={() => onOpen(image.id)}
+                          className="rounded-md border border-violet-200 bg-violet-50 px-2.5 py-1 text-[11px] font-semibold text-violet-700 hover:bg-violet-100"
+                        >
+                          Open
+                        </button>
+                      )}
+                      {onRetry && state?.status !== "indexing" && (
+                        <button
+                          type="button"
+                          onClick={() => onRetry(image.id)}
+                          className="rounded-md border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-600 hover:bg-slate-50"
+                        >
+                          Re-index
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {state && state.status === "indexing" && (
+                    <DocumentIndexProgressCard
+                      filename={image.fileName}
+                      state={state}
+                      variant="image"
+                      onRetry={onRetry ? () => onRetry(image.id) : undefined}
+                      onCancel={
+                        onCancel ? () => onCancel(image.id) : undefined
+                      }
+                      compact
+                    />
+                  )}
+
+                  {state?.status === "failed" && (
+                    <DocumentIndexProgressCard
+                      filename={image.fileName}
+                      state={state}
+                      variant="image"
+                      onRetry={onRetry ? () => onRetry(image.id) : undefined}
+                      compact
+                    />
+                  )}
+                </li>
+              );
+            })}
           </ul>
           <div className="flex justify-center">
-            <AddButton label="Add Images" onClick={openFilePicker} />
+            <AddButton
+              label="Add Images"
+              onClick={openFilePicker}
+              disabled={isAdding}
+            />
           </div>
         </div>
       )}

@@ -2,12 +2,16 @@ export type DocumentIndexStatus = "indexing" | "ready" | "failed";
 
 export type IndexStage =
   | "uploading"
+  | "analysing"
   | "extracting"
   | "chunking"
   | "embedding"
   | "saving"
   | "ready"
   | "failed";
+
+/** Media origin for unified PDF + image retrieval. */
+export type DocumentSourceKind = "pdf" | "image" | "text";
 
 export type DocumentIndexState = {
   documentId: string;
@@ -36,6 +40,7 @@ export type DocumentChunk = {
   page?: number;
   chunkIndex: number;
   text: string;
+  sourceKind?: DocumentSourceKind;
 };
 
 export type StoredDocumentChunk = DocumentChunk & {
@@ -54,6 +59,9 @@ export type RetrievedSourceMetadata = {
   similarityScore: number;
   chunkId: string;
   excerpt: string;
+  sourceKind?: DocumentSourceKind;
+  ocrText?: string;
+  description?: string;
 };
 
 export const MAX_CITATION_SOURCES = 5;
@@ -66,6 +74,20 @@ export type IndexDocumentRequest = {
   contentHash: string;
   fileSize?: number;
   totalPages?: number;
+  sourceKind?: DocumentSourceKind;
+  mimeType?: string;
+  ocrText?: string;
+  description?: string;
+};
+
+export type IndexImageRequest = {
+  documentId: string;
+  documentName: string;
+  contentHash: string;
+  fileSize?: number;
+  mimeType: string;
+  /** When true, force a fresh vision pass even if hash matches. */
+  forceReanalyze?: boolean;
 };
 
 export type IndexDocumentResult = {
@@ -86,6 +108,11 @@ export type LibraryDocumentSummary = {
   totalPages: number;
   indexedAt: string;
   hasPdf: boolean;
+  hasImage?: boolean;
+  sourceKind?: DocumentSourceKind;
+  mimeType?: string;
+  ocrText?: string;
+  description?: string;
   status: DocumentIndexStatus;
   chunkCount?: number;
   error?: string;
@@ -111,7 +138,11 @@ export const EMBED_BATCH_SIZE = 20;
 export function toSourceMetadata(
   chunks: RetrievedChunk[],
 ): RetrievedSourceMetadata[] {
-  return chunks.slice(0, MAX_CITATION_SOURCES).map((chunk) => ({
+  // Citation UI remains PDF-oriented for now — exclude image chunks from the
+  // streamed citation payload while preserving internal retrieval for prompts.
+  const citable = chunks.filter((chunk) => chunk.sourceKind !== "image");
+
+  return citable.slice(0, MAX_CITATION_SOURCES).map((chunk) => ({
     filename: chunk.filename,
     documentId: chunk.documentId,
     page: chunk.page,
@@ -119,5 +150,6 @@ export function toSourceMetadata(
     similarityScore: chunk.similarityScore,
     chunkId: chunk.id,
     excerpt: chunk.text,
+    sourceKind: chunk.sourceKind,
   }));
 }

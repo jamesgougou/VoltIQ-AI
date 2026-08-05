@@ -1,5 +1,6 @@
 import type { DocumentIndexState, IndexStage } from "@/lib/rag/types";
 
+/** Default / PDF pipeline (no vision analyse step). */
 export const INDEX_STAGE_ORDER: IndexStage[] = [
   "uploading",
   "extracting",
@@ -9,8 +10,20 @@ export const INDEX_STAGE_ORDER: IndexStage[] = [
   "ready",
 ];
 
+/** Image pipeline includes vision analysis. */
+export const IMAGE_INDEX_STAGE_ORDER: IndexStage[] = [
+  "uploading",
+  "analysing",
+  "extracting",
+  "chunking",
+  "embedding",
+  "saving",
+  "ready",
+];
+
 export const INDEX_STAGE_LABELS: Record<IndexStage, string> = {
-  uploading: "Uploading document",
+  uploading: "Uploading",
+  analysing: "Analysing image",
   extracting: "Extracting text",
   chunking: "Splitting into chunks",
   embedding: "Generating embeddings",
@@ -21,9 +34,10 @@ export const INDEX_STAGE_LABELS: Record<IndexStage, string> = {
 
 const STAGE_BASE_PROGRESS: Record<IndexStage, number> = {
   uploading: 5,
-  extracting: 12,
-  chunking: 20,
-  embedding: 25,
+  analysing: 10,
+  extracting: 18,
+  chunking: 28,
+  embedding: 35,
   saving: 92,
   ready: 100,
   failed: 0,
@@ -120,18 +134,25 @@ export function isAnyDocumentIndexing(
   return documentIds.some((documentId) => isIndexingActive(states[documentId]));
 }
 
-export function getCompletedStages(currentStage: IndexStage | undefined): IndexStage[] {
+export function getCompletedStages(
+  currentStage: IndexStage | undefined,
+  stageOrder: IndexStage[] = INDEX_STAGE_ORDER,
+): IndexStage[] {
   if (!currentStage || currentStage === "failed") {
     return [];
   }
 
-  const currentIndex = INDEX_STAGE_ORDER.indexOf(currentStage);
+  const currentIndex = stageOrder.indexOf(currentStage);
 
   if (currentIndex <= 0) {
+    // Image may be on analysing while PDF order is active — treat as none complete.
+    if (currentStage === "analysing") {
+      return stageOrder.includes("uploading") ? ["uploading"] : [];
+    }
     return [];
   }
 
-  return INDEX_STAGE_ORDER.slice(0, currentIndex);
+  return stageOrder.slice(0, currentIndex);
 }
 
 export function getCurrentStageLabel(state?: DocumentIndexState): string {

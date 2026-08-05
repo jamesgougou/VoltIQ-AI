@@ -36,6 +36,11 @@ export type DocumentRecord = {
   totalPages?: number;
   indexedAt?: string;
   hasPdf?: boolean;
+  hasImage?: boolean;
+  sourceKind?: "pdf" | "image" | "text";
+  mimeType?: string;
+  ocrText?: string;
+  description?: string;
   /** When false, document is stored but excluded from RAG retrieval. Default true. */
   enabled?: boolean;
   tags?: string[];
@@ -50,6 +55,11 @@ export type DocumentRecordInput = {
   totalPages?: number;
   indexedAt?: string;
   hasPdf?: boolean;
+  hasImage?: boolean;
+  sourceKind?: "pdf" | "image" | "text";
+  mimeType?: string;
+  ocrText?: string;
+  description?: string;
   enabled?: boolean;
   tags?: string[];
   lastUsedAt?: string;
@@ -123,6 +133,7 @@ function migrateChunk(
     page: legacy.page ?? legacy.pageNumber,
     chunkIndex: legacy.chunkIndex ?? index,
     text: legacy.text,
+    sourceKind: legacy.sourceKind,
     embedding: legacy.embedding,
   };
 }
@@ -145,6 +156,11 @@ function migrateDocuments(
             totalPages: legacy.totalPages,
             indexedAt: legacy.indexedAt,
             hasPdf: legacy.hasPdf,
+            hasImage: legacy.hasImage,
+            sourceKind: legacy.sourceKind,
+            mimeType: legacy.mimeType,
+            ocrText: legacy.ocrText,
+            description: legacy.description,
             enabled: legacy.enabled ?? true,
             tags: legacy.tags ?? [],
             lastUsedAt: legacy.lastUsedAt,
@@ -510,6 +526,11 @@ export class VectorStore {
         totalPages: meta?.totalPages ?? existing?.totalPages,
         indexedAt: meta?.indexedAt ?? new Date().toISOString(),
         hasPdf: meta?.hasPdf ?? existing?.hasPdf,
+        hasImage: meta?.hasImage ?? existing?.hasImage,
+        sourceKind: meta?.sourceKind ?? existing?.sourceKind,
+        mimeType: meta?.mimeType ?? existing?.mimeType,
+        ocrText: meta?.ocrText ?? existing?.ocrText,
+        description: meta?.description ?? existing?.description,
         enabled: meta?.enabled ?? existing?.enabled ?? true,
         tags: meta?.tags ?? existing?.tags ?? [],
         lastUsedAt: meta?.lastUsedAt ?? existing?.lastUsedAt,

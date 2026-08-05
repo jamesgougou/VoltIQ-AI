@@ -3,6 +3,7 @@ import type {
   DocumentIndexState,
   IndexDocumentRequest,
   IndexDocumentResult,
+  IndexImageRequest,
   IndexStage,
   PdfPageText,
 } from "@/types/rag";
@@ -190,6 +191,87 @@ export async function indexDocumentInRag(
   if (result.status === "failed") {
     throw new Error(
       result.error ?? "Unable to generate embeddings for this document.",
+    );
+  }
+
+  return result;
+}
+
+export async function indexImageInRag(
+  request: IndexImageRequest,
+  signal?: AbortSignal,
+): Promise<IndexDocumentResult> {
+  console.info(
+    `[RAG:client] Analysing image ${request.documentName} (${request.mimeType}).`,
+  );
+
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(
+    () => controller.abort(),
+    INDEX_REQUEST_TIMEOUT_MS,
+  );
+
+  if (signal) {
+    if (signal.aborted) {
+      controller.abort();
+    } else {
+      signal.addEventListener("abort", () => controller.abort(), {
+        once: true,
+      });
+    }
+  }
+
+  let response: Response;
+
+  try {
+    response = await fetch("/api/rag/index-image", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(request),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (signal?.aborted) {
+      throw new Error("Document indexing cancelled.");
+    }
+
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error(
+        "Image analysis timed out before completion. Remove the image and upload again.",
+      );
+    }
+
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+
+  const result = (await response.json().catch(() => null)) as
+    | (IndexDocumentResult & { cancelled?: boolean })
+    | { error?: string }
+    | null;
+
+  if (result && "cancelled" in result && result.cancelled) {
+    throw new Error("Document indexing cancelled.");
+  }
+
+  if (!response.ok || !result || !("status" in result)) {
+    throw new Error(
+      result && "error" in result && result.error
+        ? result.error
+        : "Unable to analyse and index the uploaded image.",
+    );
+  }
+
+  console.info(
+    `[RAG:client] Image index result for ${request.documentName}: ${result.status} (${result.chunkCount} chunks).`,
+  );
+
+  if (result.status === "failed") {
+    throw new Error(
+      result.error ?? "Unable to analyse and index this image.",
     );
   }
 

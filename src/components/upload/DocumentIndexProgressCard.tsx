@@ -3,6 +3,7 @@
 import {
   formatEstimatedTime,
   getCompletedStages,
+  IMAGE_INDEX_STAGE_ORDER,
   INDEX_STAGE_LABELS,
   INDEX_STAGE_ORDER,
 } from "@/lib/rag/indexProgress";
@@ -14,6 +15,8 @@ type DocumentIndexProgressCardProps = {
   onRetry?: () => void;
   onCancel?: () => void;
   compact?: boolean;
+  /** Use the image vision pipeline stage list. */
+  variant?: "document" | "image";
 };
 
 function StageIcon({ complete }: { complete: boolean }) {
@@ -46,9 +49,15 @@ function ProgressBar({ value }: { value: number }) {
   );
 }
 
-function PipelineStages({ currentStage }: { currentStage: IndexStage }) {
-  const completed = new Set(getCompletedStages(currentStage));
-  const visibleStages = INDEX_STAGE_ORDER.filter((stage) => stage !== "ready");
+function PipelineStages({
+  currentStage,
+  stageOrder,
+}: {
+  currentStage: IndexStage;
+  stageOrder: IndexStage[];
+}) {
+  const completed = new Set(getCompletedStages(currentStage, stageOrder));
+  const visibleStages = stageOrder.filter((stage) => stage !== "ready");
 
   return (
     <ul className="space-y-1.5 text-[11px] text-slate-600">
@@ -81,7 +90,10 @@ export function DocumentIndexProgressCard({
   onRetry,
   onCancel,
   compact = false,
+  variant = "document",
 }: DocumentIndexProgressCardProps) {
+  const stageOrder =
+    variant === "image" ? IMAGE_INDEX_STAGE_ORDER : INDEX_STAGE_ORDER;
   if (!state) {
     return null;
   }
@@ -156,7 +168,10 @@ export function DocumentIndexProgressCard({
 
       {!compact && (
         <div className="mt-3 border-t border-violet-100 pt-3">
-          <PipelineStages currentStage={state.stage ?? "uploading"} />
+          <PipelineStages
+            currentStage={state.stage ?? "uploading"}
+            stageOrder={stageOrder}
+          />
         </div>
       )}
 

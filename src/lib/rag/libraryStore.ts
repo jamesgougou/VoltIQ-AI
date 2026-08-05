@@ -7,7 +7,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import path from "node:path";
-import type { PdfPageText } from "@/lib/rag/types";
+import type { DocumentSourceKind, PdfPageText } from "@/lib/rag/types";
 
 export type LibraryDocumentArtifacts = {
   documentId: string;
@@ -19,6 +19,11 @@ export type LibraryDocumentArtifacts = {
   text: string;
   pages: PdfPageText[];
   hasPdf: boolean;
+  hasImage: boolean;
+  sourceKind?: DocumentSourceKind;
+  mimeType?: string;
+  ocrText?: string;
+  description?: string;
 };
 
 type ExtractedPayload = {
@@ -30,6 +35,10 @@ type ExtractedPayload = {
   indexedAt: string;
   text: string;
   pages: PdfPageText[];
+  sourceKind?: DocumentSourceKind;
+  mimeType?: string;
+  ocrText?: string;
+  description?: string;
 };
 
 const STORE_DIR = path.join(process.cwd(), ".voltiq");
@@ -47,6 +56,10 @@ function pdfPath(documentId: string): string {
   return path.join(documentDir(documentId), "source.pdf");
 }
 
+function imagePath(documentId: string): string {
+  return path.join(documentDir(documentId), "source.image");
+}
+
 async function pathExists(filePath: string): Promise<boolean> {
   try {
     await stat(filePath);
@@ -57,7 +70,7 @@ async function pathExists(filePath: string): Promise<boolean> {
 }
 
 export async function saveLibraryExtracted(
-  input: Omit<LibraryDocumentArtifacts, "hasPdf">,
+  input: Omit<LibraryDocumentArtifacts, "hasPdf" | "hasImage">,
 ): Promise<void> {
   const dir = documentDir(input.documentId);
   await mkdir(dir, { recursive: true });
@@ -71,6 +84,10 @@ export async function saveLibraryExtracted(
     indexedAt: input.indexedAt,
     text: input.text,
     pages: input.pages,
+    sourceKind: input.sourceKind,
+    mimeType: input.mimeType,
+    ocrText: input.ocrText,
+    description: input.description,
   };
 
   await writeFile(
@@ -87,6 +104,15 @@ export async function saveLibraryPdf(
   const dir = documentDir(documentId);
   await mkdir(dir, { recursive: true });
   await writeFile(pdfPath(documentId), bytes);
+}
+
+export async function saveLibraryImage(
+  documentId: string,
+  bytes: Buffer,
+): Promise<void> {
+  const dir = documentDir(documentId);
+  await mkdir(dir, { recursive: true });
+  await writeFile(imagePath(documentId), bytes);
 }
 
 export async function readLibraryExtracted(
@@ -110,8 +136,22 @@ export async function readLibraryPdf(
   }
 }
 
+export async function readLibraryImage(
+  documentId: string,
+): Promise<Buffer | null> {
+  try {
+    return await readFile(imagePath(documentId));
+  } catch {
+    return null;
+  }
+}
+
 export async function libraryHasPdf(documentId: string): Promise<boolean> {
   return pathExists(pdfPath(documentId));
+}
+
+export async function libraryHasImage(documentId: string): Promise<boolean> {
+  return pathExists(imagePath(documentId));
 }
 
 export async function listLibraryDocumentIds(): Promise<string[]> {
@@ -133,10 +173,15 @@ export async function getLibraryDocument(
   }
 
   const hasPdf = await libraryHasPdf(documentId);
+  const hasImage = await libraryHasImage(documentId);
 
   return {
     ...extracted,
     hasPdf,
+    hasImage,
+    sourceKind:
+      extracted.sourceKind ??
+      (hasImage ? "image" : hasPdf ? "pdf" : "text"),
   };
 }
 

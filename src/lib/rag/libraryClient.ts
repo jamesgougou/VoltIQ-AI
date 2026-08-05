@@ -112,6 +112,49 @@ export function libraryPdfFileUrl(documentId: string): string {
   return `/api/rag/library/${encodeURIComponent(documentId)}/file`;
 }
 
+export function libraryImageFileUrl(documentId: string): string {
+  return `/api/rag/library/${encodeURIComponent(documentId)}/image`;
+}
+
+export async function uploadLibraryImage(
+  documentId: string,
+  file: Blob,
+  mimeType?: string,
+): Promise<void> {
+  const response = await fetch(
+    `/api/rag/library/${encodeURIComponent(documentId)}/image`,
+    {
+      method: "PUT",
+      headers: {
+        "Content-Type": mimeType || file.type || "application/octet-stream",
+      },
+      body: file,
+    },
+  );
+
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as {
+      error?: string;
+    } | null;
+    throw new Error(payload?.error || "Unable to save the image file.");
+  }
+}
+
+export async function createLibraryImageBlobUrl(
+  documentId: string,
+): Promise<string | null> {
+  const response = await fetch(libraryImageFileUrl(documentId), {
+    cache: "force-cache",
+  });
+
+  if (!response.ok) {
+    return null;
+  }
+
+  const blob = await response.blob();
+  return URL.createObjectURL(blob);
+}
+
 export async function patchLibraryDocumentMeta(
   documentId: string,
   patch: {
