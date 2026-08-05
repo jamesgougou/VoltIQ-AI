@@ -88,7 +88,6 @@ export async function analyzeElectricalImage(input: {
   const completion = await client.chat.completions.create(
     {
       model,
-      temperature: 0,
       messages: [
         { role: "system", content: VISION_SYSTEM_PROMPT },
         {
