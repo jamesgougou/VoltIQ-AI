@@ -1,3 +1,5 @@
+import type { CalcResult } from "@/lib/calculators";
+
 export type ChatRole = "user" | "assistant";
 
 export type ChatMessage = {
@@ -6,4 +8,6 @@ export type ChatMessage = {
   content: string;
   createdAt: Date;
   sources?: import("@/lib/rag/types").RetrievedSourceMetadata[];
+  /** Deterministic calculator payload — separate from RAG answers. */
+  calculation?: CalcResult;
 };

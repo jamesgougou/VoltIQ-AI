@@ -9,10 +9,21 @@ import {
   resolveRetrievalDocumentIds,
   type RetrievalScope,
 } from "@/lib/rag/libraryMeta";
+import {
+  buildExplainPrompt,
+  CALCULATOR_REDIRECT_MESSAGE,
+  formatCalcResultMarkdown,
+  isCalculatorExplainPrompt,
+  isFreeFormCalculationRequest,
+  suggestedCalculatorId,
+  type CalcResult,
+  type CalculatorId,
+} from "@/lib/calculators";
 import type { ChatMessage } from "@/types/chat";
 import type { DocumentContextItem } from "@/types/documentContext";
 import type { DocumentIndexState } from "@/types/rag";
 import type { StudyModeId } from "@/types/study";
+import { CalculatorsPanel } from "@/components/Calculators";
 import { StudyPanel } from "@/components/Study";
 import { AIToolsPanel } from "./AIToolsPanel";
 import { ChatHistory } from "./ChatHistory";
@@ -33,6 +44,7 @@ function createMessage(
   content: string,
   id?: string,
   sources?: ChatMessage["sources"],
+  calculation?: CalcResult,
 ): ChatMessage {
   return {
     id: id ?? crypto.randomUUID(),
@@ -40,6 +52,7 @@ function createMessage(
     content,
     createdAt: new Date(),
     sources,
+    calculation,
   };
 }
 
@@ -56,9 +69,17 @@ export function ChatPanel({
   const [isLoading, setIsLoading] = useState(false);
   const [focusTrigger, setFocusTrigger] = useState(0);
   const [studyMode, setStudyMode] = useState<StudyModeId>("idle");
+  const [calculatorFocusId, setCalculatorFocusId] =
+    useState<CalculatorId | null>(null);
+  const [calculatorFocusToken, setCalculatorFocusToken] = useState(0);
   const bottomRef = useRef<HTMLDivElement>(null);
   const previousHasDocuments = useRef(hasDocuments);
   const previousIsLoading = useRef(isLoading);
+
+  const openCalculator = useCallback((id: CalculatorId) => {
+    setCalculatorFocusId(id);
+    setCalculatorFocusToken((current) => current + 1);
+  }, []);
 
   const focusInput = useCallback(() => {
     setFocusTrigger((current) => current + 1);
@@ -117,7 +138,27 @@ export function ChatPanel({
   const sendMessage = useCallback(
     async (messageOverride?: string) => {
       const trimmed = (messageOverride ?? input).trim();
-      if (!trimmed || isLoading || !hasDocuments || indexingInProgress) return;
+      if (!trimmed || isLoading) return;
+
+      // Free-form numerical calc requests never go to the LLM.
+      // Route users to the Electrical Calculators panel instead.
+      if (
+        isFreeFormCalculationRequest(trimmed) &&
+        !isCalculatorExplainPrompt(trimmed)
+      ) {
+        const calculatorId = suggestedCalculatorId(trimmed);
+        openCalculator(calculatorId);
+        setInput("");
+        setMessages((current) => [
+          ...current,
+          createMessage("user", trimmed),
+          createMessage("assistant", CALCULATOR_REDIRECT_MESSAGE),
+        ]);
+        return;
+      }
+
+      // Explain-with-AI and normal RAG chat still require documents.
+      if (!hasDocuments || indexingInProgress) return;
 
       const userMessage = createMessage("user", trimmed);
       const nextMessages = [...messages, userMessage];
@@ -259,6 +300,7 @@ export function ChatPanel({
       retrievalDocumentIds,
       indexStates,
       indexingInProgress,
+      openCalculator,
     ],
   );
 
@@ -273,6 +315,24 @@ export function ChatPanel({
 
   function handleToolSelect(prompt: string) {
     void sendMessage(prompt);
+  }
+
+  function handleSendCalcResult(result: CalcResult) {
+    setMessages((current) => [
+      ...current,
+      createMessage(
+        "assistant",
+        formatCalcResultMarkdown(result),
+        undefined,
+        undefined,
+        result,
+      ),
+    ]);
+    scrollToBottom();
+  }
+
+  function handleExplainCalcResult(result: CalcResult) {
+    void sendMessage(buildExplainPrompt(result));
   }
 
   const hasConversation = messages.length > 0 || isLoading;
@@ -290,9 +350,19 @@ export function ChatPanel({
           AI Chat
         </h2>
         <p className="mt-0.5 text-xs text-slate-500">
-          Ask questions about your documents, standards, switchboards and solar
-          systems.
+          Ask document and standards questions here. Use Electrical Calculators
+          above for numerical power, voltage drop, cable and demand calculations.
         </p>
+      </div>
+
+      <div className="border-b border-slate-100 px-4 py-3 sm:px-6">
+        <CalculatorsPanel
+          onSendResultToChat={handleSendCalcResult}
+          onExplainResult={handleExplainCalcResult}
+          explainDisabled={isLoading || !hasDocuments || indexingInProgress}
+          focusCalculatorId={calculatorFocusId}
+          focusToken={calculatorFocusToken}
+        />
       </div>
 
       <div className="border-b border-slate-100 px-4 py-3 sm:px-6">
@@ -317,6 +387,7 @@ export function ChatPanel({
             disabled={isLoading || indexingInProgress}
           />
         </div>
+
         <ChatHistory
           messages={messages}
           isLoading={isLoading}
@@ -332,12 +403,12 @@ export function ChatPanel({
           placeholder={
             indexingInProgress
               ? "Document indexing in progress..."
-              : "Ask anything..."
+              : "Ask about your documents or standards…"
           }
           helperText={
             indexingInProgress
               ? "Document indexing in progress..."
-              : "Enter to send · Shift+Enter for new line"
+              : "For numerical calculations use Electrical Calculators · Enter to send"
           }
           focusTrigger={focusTrigger}
           scopeBar={

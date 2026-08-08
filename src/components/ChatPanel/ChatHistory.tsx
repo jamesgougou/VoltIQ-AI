@@ -36,6 +36,7 @@ export function ChatHistory({
               content={message.content}
               createdAt={message.createdAt}
               sources={message.sources}
+              calculation={message.calculation}
             />
           ))}
           {isLoading && <TypingIndicator />}

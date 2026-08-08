@@ -1,6 +1,8 @@
 "use client";
 
+import { CalcResultView } from "@/components/Calculators";
 import { AssistantAnswer } from "@/components/Citations";
+import type { CalcResult } from "@/lib/calculators";
 import { formatMessageTime } from "@/lib/format";
 import type { RetrievedSourceMetadata } from "@/lib/rag/types";
 import { CopyButton } from "./CopyButton";
@@ -11,6 +13,7 @@ type ChatMessageBubbleProps = {
   content: string;
   createdAt: Date;
   sources?: RetrievedSourceMetadata[];
+  calculation?: CalcResult;
 };
 
 export function ChatMessageBubble({
@@ -19,6 +22,7 @@ export function ChatMessageBubble({
   content,
   createdAt,
   sources,
+  calculation,
 }: ChatMessageBubbleProps) {
   const isUser = role === "user";
   const timestamp = formatMessageTime(createdAt);
@@ -31,7 +35,11 @@ export function ChatMessageBubble({
         }`}
       >
         {!isUser && (
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-violet-600 shadow-sm">
+          <div
+            className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full shadow-sm ${
+              calculation ? "bg-amber-700" : "bg-violet-600"
+            }`}
+          >
             <svg
               className="h-4 w-4 text-white"
               fill="none"
@@ -55,29 +63,33 @@ export function ChatMessageBubble({
           {!isUser && (
             <div className="mb-1.5 flex w-full items-center justify-between gap-3">
               <span className="text-xs font-medium text-slate-500">
-                VoltIQ AI
+                {calculation ? "Electrical Calculator" : "VoltIQ AI"}
               </span>
               <CopyButton text={content} />
             </div>
           )}
 
-          <div
-            className={`rounded-2xl px-4 py-3 text-sm leading-relaxed shadow-sm ${
-              isUser
-                ? "rounded-tr-md bg-slate-800 text-white whitespace-pre-wrap"
-                : "rounded-tl-md border border-slate-200/80 bg-slate-50 text-slate-800"
-            }`}
-          >
-            {isUser ? (
-              content
-            ) : (
-              <AssistantAnswer
-                content={content}
-                messageId={id}
-                sources={sources}
-              />
-            )}
-          </div>
+          {calculation ? (
+            <CalcResultView result={calculation} />
+          ) : (
+            <div
+              className={`rounded-2xl px-4 py-3 text-sm leading-relaxed shadow-sm ${
+                isUser
+                  ? "rounded-tr-md bg-slate-800 text-white whitespace-pre-wrap"
+                  : "rounded-tl-md border border-slate-200/80 bg-slate-50 text-slate-800"
+              }`}
+            >
+              {isUser ? (
+                content
+              ) : (
+                <AssistantAnswer
+                  content={content}
+                  messageId={id}
+                  sources={sources}
+                />
+              )}
+            </div>
+          )}
 
           <span
             className={`mt-1.5 text-[11px] text-slate-400 ${
