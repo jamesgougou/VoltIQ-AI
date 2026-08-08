@@ -4,6 +4,13 @@ import { VOLTIQ_SYSTEM_PROMPT } from "./systemPrompt";
 
 const SECTION_DIVIDER = "--------------------------------";
 
+const GROUNDED_ANSWER_GUIDANCE = `Answer using only the retrieved chunks below for document-grounded claims.
+
+- Cite filename and page exactly as shown in each chunk header when discussing PDF content.
+- Do not invent AS/NZS standards, clause numbers, requirements, quotations, or page numbers that are not present in the chunks.
+- If the chunks only partially answer the question, state what is missing from the uploaded documents.
+- If you add anything beyond the chunks, put it under a separate heading: "General knowledge".`;
+
 function getDocumentText(document: DocumentContextItem): string {
   return (document.ocrText ?? document.text).trim();
 }
@@ -58,16 +65,16 @@ export function buildSystemContent(
   options?: { insufficientRetrieval?: boolean },
 ): string {
   if (options?.insufficientRetrieval) {
-    return `${VOLTIQ_SYSTEM_PROMPT}\n\nThe retrieval engine could not find sufficiently relevant content in the uploaded PDFs or images for this question.\n\nYou MUST begin your response with exactly: "I couldn't find sufficient information in the uploaded documents."\n\nYou may then provide clearly labelled general electrical knowledge if appropriate, but do not present it as document or image content and do not invent citations, clauses, page numbers, or quotations.`;
+    return `${VOLTIQ_SYSTEM_PROMPT}\n\nThe retrieval engine could not find sufficiently relevant content in the uploaded PDFs or images for this question.\n\nYou MUST begin your response with exactly: "I couldn't find sufficient information in the uploaded documents."\n\nAfter that sentence, you may provide clearly labelled general Australian electrical knowledge under the heading "General knowledge" if appropriate. Do not present it as document or image content. Do not invent citations, AS/NZS standards, clause numbers, page numbers, or quotations.`;
   }
 
   const retrievedSection = buildRetrievedContextSection(chunks);
 
   if (!retrievedSection) {
-    return `${VOLTIQ_SYSTEM_PROMPT}\n\nNo relevant PDF or image chunks were retrieved for this question. If the user expects an answer from uploaded files, clearly state that the uploaded PDFs and images do not contain the requested information before offering any general knowledge.`;
+    return `${VOLTIQ_SYSTEM_PROMPT}\n\nNo relevant PDF or image chunks were retrieved for this question.\n\nClearly state that the uploaded PDFs and images do not contain enough information for this question before offering any general knowledge.\n\nIf you provide general knowledge, place it under the heading "General knowledge" and do not invent citations, AS/NZS standards, clause numbers, or page numbers.`;
   }
 
-  return `${VOLTIQ_SYSTEM_PROMPT}\n\n${SECTION_DIVIDER}\n\n${retrievedSection}`;
+  return `${VOLTIQ_SYSTEM_PROMPT}\n\n${GROUNDED_ANSWER_GUIDANCE}\n\n${SECTION_DIVIDER}\n\n${retrievedSection}`;
 }
 
 export function hasUsableDocumentContent(
