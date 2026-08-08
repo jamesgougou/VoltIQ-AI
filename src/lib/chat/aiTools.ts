@@ -43,7 +43,7 @@ export const AI_TOOLS: AITool[] = [
     title: "Find Standards",
     description: "Find AS/NZS standards referenced in uploads.",
     prompt:
-      "List every AS/NZS standard referenced in my uploaded documents. Include clause, table, or section references only when they appear in the documents. If a standard number is not present, do not invent it.",
+      "Using only my uploaded documents, list every AS/NZS standard, clause, section, and table reference that appears. Structure the response as Answer, Requirement / Finding, Explanation, Practical application, and Source / Page. Include clause or section numbers only when they appear in the documents. If a standard or clause is not present, say so clearly and do not invent it.",
     icon: "standards",
   },
   {
