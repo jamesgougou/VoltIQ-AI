@@ -3,6 +3,7 @@ import {
   isCancellationError,
   registerIndexCancellation,
 } from "@/lib/rag/indexCancellation";
+import { assertSafeDocumentId, UnsafeDocumentIdError } from "@/lib/rag/documentId";
 import { ragLog } from "@/lib/rag/logger";
 import { indexImageDocument } from "@/lib/rag/retrieve";
 import type { IndexDocumentResult, IndexImageRequest } from "@/types/rag";
@@ -25,6 +26,15 @@ export async function POST(request: Request) {
 
   if (!body.documentId?.trim() || !body.documentName?.trim()) {
     return errorResponse("Document ID and name are required.", 400);
+  }
+
+  try {
+    body.documentId = assertSafeDocumentId(body.documentId);
+  } catch (error) {
+    if (error instanceof UnsafeDocumentIdError) {
+      return errorResponse("Invalid document ID.", 400);
+    }
+    throw error;
   }
 
   if (!body.contentHash?.trim()) {

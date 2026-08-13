@@ -1,3 +1,7 @@
+import {
+  assertSafeDocumentId,
+  UnsafeDocumentIdError,
+} from "@/lib/rag/documentId";
 import { deleteIndexedDocument } from "@/lib/rag/retrieve";
 
 export const runtime = "nodejs";
@@ -19,8 +23,19 @@ export async function POST(request: Request) {
     return errorResponse("Document ID is required.", 400);
   }
 
+  let documentId: string;
+
   try {
-    await deleteIndexedDocument(body.documentId.trim());
+    documentId = assertSafeDocumentId(body.documentId);
+  } catch (error) {
+    if (error instanceof UnsafeDocumentIdError) {
+      return errorResponse("Invalid document ID.", 400);
+    }
+    throw error;
+  }
+
+  try {
+    await deleteIndexedDocument(documentId);
     return Response.json({ success: true });
   } catch (error) {
     console.error("Failed to delete document index:", error);

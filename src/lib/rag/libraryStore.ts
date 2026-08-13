@@ -7,8 +7,15 @@ import {
   writeFile,
 } from "node:fs/promises";
 import path from "node:path";
+import {
+  assertSafeDocumentId,
+  getLibraryRootDir,
+  isSafeDocumentId,
+} from "@/lib/rag/documentId";
 import { resolveLibrarySourceKind } from "@/lib/rag/libraryMeta";
 import type { DocumentSourceKind, PdfPageText } from "@/lib/rag/types";
+
+export { assertSafeDocumentId, UnsafeDocumentIdError } from "@/lib/rag/documentId";
 
 export type LibraryDocumentArtifacts = {
   documentId: string;
@@ -42,11 +49,11 @@ type ExtractedPayload = {
   description?: string;
 };
 
-const STORE_DIR = path.join(process.cwd(), ".voltiq");
-const LIBRARY_DIR = path.join(STORE_DIR, "library");
+const LIBRARY_DIR = getLibraryRootDir();
 
 function documentDir(documentId: string): string {
-  return path.join(LIBRARY_DIR, documentId);
+  const safeId = assertSafeDocumentId(documentId);
+  return path.join(LIBRARY_DIR, safeId);
 }
 
 function extractedPath(documentId: string): string {
@@ -159,7 +166,10 @@ export async function listLibraryDocumentIds(): Promise<string[]> {
   try {
     await mkdir(LIBRARY_DIR, { recursive: true });
     const entries = await readdir(LIBRARY_DIR, { withFileTypes: true });
-    return entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+    return entries
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .filter((name) => isSafeDocumentId(name));
   } catch {
     return [];
   }

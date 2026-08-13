@@ -1,6 +1,8 @@
 import OpenAI from "openai";
+import { validateChatPayload } from "@/lib/api/requestLimits";
 import { buildSystemContent } from "@/lib/chat/buildPrompt";
 import { getOpenAIClient, getOpenAIModel } from "@/lib/openai";
+import { isSafeDocumentId } from "@/lib/rag/documentId";
 import {
   RetrievalError,
   getDocumentIndexStatuses,
@@ -55,7 +57,6 @@ function mapOpenAIError(error: unknown): { message: string; status: number } {
 
     return {
       message:
-        error.message ||
         "OpenAI returned an unexpected error. Please try again.",
       status: error.status ?? 502,
     };
@@ -126,6 +127,22 @@ export async function POST(request: Request) {
     return errorResponse("A user message is required.", 400);
   }
 
+  const documentIds = body.documentIds?.filter(
+    (documentId) =>
+      typeof documentId === "string" &&
+      documentId.trim().length > 0 &&
+      isSafeDocumentId(documentId),
+  );
+
+  const limitError = validateChatPayload({
+    messages: history,
+    documentIds,
+  });
+
+  if (limitError) {
+    return errorResponse(limitError, 400);
+  }
+
   const apiKey = process.env.OPENAI_API_KEY?.trim();
 
   if (!apiKey) {
@@ -138,10 +155,6 @@ export async function POST(request: Request) {
   if (!process.env.OPENAI_MODEL?.trim()) {
     console.info(`OPENAI_MODEL not set. Using default model: ${model}.`);
   }
-
-  const documentIds = body.documentIds?.filter(
-    (documentId) => typeof documentId === "string" && documentId.trim().length > 0,
-  );
 
   if (body.hasTextDocuments && documentIds?.length) {
     const statuses = await getDocumentIndexStatuses(documentIds);
@@ -161,6 +174,17 @@ export async function POST(request: Request) {
     );
   }
 
+  const abortController = new AbortController();
+  const timeoutId = setTimeout(
+    () => abortController.abort(),
+    REQUEST_TIMEOUT_MS,
+  );
+
+  const onClientAbort = () => {
+    abortController.abort();
+  };
+  request.signal.addEventListener("abort", onClientAbort);
+
   try {
     const openai = getOpenAIClient();
     const retrieval = await retrieveWithHybridSearch(
@@ -170,9 +194,6 @@ export async function POST(request: Request) {
     );
     const retrievedChunks = retrieval.chunks;
     const sourceMetadata = toSourceMetadata(retrievedChunks);
-
-    const abortController = new AbortController();
-    const timeoutId = setTimeout(() => abortController.abort(), REQUEST_TIMEOUT_MS);
 
     const stream = await openai.chat.completions.create(
       {
@@ -194,8 +215,6 @@ export async function POST(request: Request) {
       { signal: abortController.signal },
     );
 
-    clearTimeout(timeoutId);
-
     const encoder = new TextEncoder();
     const sourcesTrailer = encodeSourcesTrailer(sourceMetadata);
 
@@ -203,6 +222,10 @@ export async function POST(request: Request) {
       async start(controller) {
         try {
           for await (const chunk of stream) {
+            if (abortController.signal.aborted) {
+              break;
+            }
+
             const text = chunk.choices[0]?.delta?.content;
 
             if (text) {
@@ -210,12 +233,43 @@ export async function POST(request: Request) {
             }
           }
 
-          controller.enqueue(encoder.encode(sourcesTrailer));
+          if (abortController.signal.aborted) {
+            controller.error(
+              Object.assign(new Error("The request timed out. Please try again."), {
+                name: "AbortError",
+              }),
+            );
+            return;
+          }
 
+          controller.enqueue(encoder.encode(sourcesTrailer));
           controller.close();
         } catch (error) {
-          controller.error(error);
+          if (abortController.signal.aborted) {
+            controller.error(
+              Object.assign(new Error("The request timed out. Please try again."), {
+                name: "AbortError",
+              }),
+            );
+            return;
+          }
+
+          const mapped = mapOpenAIError(error);
+          try {
+            controller.enqueue(
+              encoder.encode(`\n\n[${mapped.message}]`),
+            );
+            controller.close();
+          } catch {
+            controller.error(error);
+          }
+        } finally {
+          clearTimeout(timeoutId);
+          request.signal.removeEventListener("abort", onClientAbort);
         }
+      },
+      cancel() {
+        abortController.abort();
       },
     });
 
@@ -226,6 +280,8 @@ export async function POST(request: Request) {
       },
     });
   } catch (error) {
+    clearTimeout(timeoutId);
+    request.signal.removeEventListener("abort", onClientAbort);
     const mapped = mapOpenAIError(error);
     return errorResponse(mapped.message, mapped.status);
   }

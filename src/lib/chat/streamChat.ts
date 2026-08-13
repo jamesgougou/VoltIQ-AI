@@ -9,9 +9,15 @@ export type ChatApiMessage = {
 const STREAM_TIMEOUT_MS = 65_000;
 
 export class ChatStreamError extends Error {
-  constructor(message: string) {
+  readonly reason: "timeout" | "cancelled" | "upstream" | "network";
+
+  constructor(
+    message: string,
+    reason: "timeout" | "cancelled" | "upstream" | "network" = "upstream",
+  ) {
     super(message);
     this.name = "ChatStreamError";
+    this.reason = reason;
   }
 }
 
@@ -27,9 +33,16 @@ export async function streamChatResponse(
 ): Promise<void> {
   const { hasTextDocuments, documentIds, onChunk, onSources, signal } = options;
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), STREAM_TIMEOUT_MS);
+  let timedOut = false;
 
-  const abortFromParent = () => controller.abort();
+  const timeoutId = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, STREAM_TIMEOUT_MS);
+
+  const abortFromParent = () => {
+    controller.abort();
+  };
   signal?.addEventListener("abort", abortFromParent);
 
   try {
@@ -61,15 +74,18 @@ export async function streamChatResponse(
         } else if (response.status === 422) {
           errorMessage =
             "Document indexing failed. Please review the upload and try again.";
+        } else if (response.status === 400) {
+          errorMessage = "The request was rejected. Please try again.";
         }
       }
 
-      throw new ChatStreamError(errorMessage);
+      throw new ChatStreamError(errorMessage, "upstream");
     }
 
     if (!response.body) {
       throw new ChatStreamError(
         "Unable to reach VoltIQ AI. Please check your connection and try again.",
+        "network",
       );
     }
 
@@ -110,7 +126,9 @@ export async function streamChatResponse(
       onChunk(finalParsed.emitted);
     }
 
-    if (finalParsed.sources.length > 0) {
+    if (finalParsed.complete) {
+      sources = finalParsed.sources;
+    } else if (finalParsed.sources.length > 0) {
       sources = finalParsed.sources;
     }
 
@@ -121,11 +139,22 @@ export async function streamChatResponse(
     }
 
     if (error instanceof DOMException && error.name === "AbortError") {
-      throw new ChatStreamError("The request timed out. Please try again.");
+      if (signal?.aborted && !timedOut) {
+        throw new ChatStreamError(
+          "The request was cancelled.",
+          "cancelled",
+        );
+      }
+
+      throw new ChatStreamError(
+        "The request timed out. Please try again.",
+        "timeout",
+      );
     }
 
     throw new ChatStreamError(
       "Unable to reach VoltIQ AI. Please check your connection and try again.",
+      "network",
     );
   } finally {
     clearTimeout(timeoutId);

@@ -1,3 +1,4 @@
+import { isSafeDocumentId } from "@/lib/rag/documentId";
 import { deleteIndexedDocument } from "@/lib/rag/retrieve";
 import { getVectorStore } from "@/lib/rag/store";
 
@@ -25,11 +26,14 @@ export async function POST(request: Request) {
   }
 
   const documentIds = body.documentIds.filter(
-    (id) => typeof id === "string" && id.trim().length > 0,
+    (id) => typeof id === "string" && isSafeDocumentId(id),
   );
 
   if (documentIds.length === 0) {
-    return Response.json({ error: "No documents selected." }, { status: 400 });
+    return Response.json(
+      { error: "No valid documents selected." },
+      { status: 400 },
+    );
   }
 
   try {

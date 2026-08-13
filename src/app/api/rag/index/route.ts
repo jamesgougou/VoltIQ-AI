@@ -1,8 +1,10 @@
+import { validateIndexPayload } from "@/lib/api/requestLimits";
 import {
   clearIndexCancellation,
   isCancellationError,
   registerIndexCancellation,
 } from "@/lib/rag/indexCancellation";
+import { assertSafeDocumentId, UnsafeDocumentIdError } from "@/lib/rag/documentId";
 import { ragLog } from "@/lib/rag/logger";
 import { indexDocument } from "@/lib/rag/retrieve";
 import type { IndexDocumentRequest, IndexDocumentResult } from "@/types/rag";
@@ -27,12 +29,30 @@ export async function POST(request: Request) {
     return errorResponse("Document ID and name are required.", 400);
   }
 
+  try {
+    body.documentId = assertSafeDocumentId(body.documentId);
+  } catch (error) {
+    if (error instanceof UnsafeDocumentIdError) {
+      return errorResponse("Invalid document ID.", 400);
+    }
+    throw error;
+  }
+
   if (!body.contentHash?.trim()) {
     return errorResponse("Content hash is required.", 400);
   }
 
   if (typeof body.text !== "string") {
     return errorResponse("Document text is required.", 400);
+  }
+
+  const limitError = validateIndexPayload({
+    text: body.text,
+    pages: body.pages,
+  });
+
+  if (limitError) {
+    return errorResponse(limitError, 400);
   }
 
   const pageCount = body.pages?.length ?? 0;

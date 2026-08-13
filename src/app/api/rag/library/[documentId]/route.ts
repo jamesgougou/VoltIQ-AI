@@ -1,4 +1,5 @@
 import { getLibraryDocument } from "@/lib/rag/libraryStore";
+import { resolveRouteDocumentId } from "@/lib/rag/safeRouteDocumentId";
 
 export const runtime = "nodejs";
 
@@ -7,10 +8,11 @@ type RouteContext = {
 };
 
 export async function GET(_request: Request, context: RouteContext) {
-  const { documentId } = await context.params;
+  const { documentId: rawDocumentId } = await context.params;
+  const documentId = resolveRouteDocumentId(rawDocumentId);
 
-  if (!documentId?.trim()) {
-    return Response.json({ error: "Document ID is required." }, { status: 400 });
+  if (documentId instanceof Response) {
+    return documentId;
   }
 
   try {
