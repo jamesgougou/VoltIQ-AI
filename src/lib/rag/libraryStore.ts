@@ -4,9 +4,9 @@ import {
   readdir,
   rm,
   stat,
-  writeFile,
 } from "node:fs/promises";
 import path from "node:path";
+import { writeBytesAtomically } from "@/lib/rag/atomicWrite";
 import {
   assertSafeDocumentId,
   getLibraryRootDir,
@@ -98,10 +98,11 @@ export async function saveLibraryExtracted(
     description: input.description,
   };
 
-  await writeFile(
+  // Compact JSON — preserve existing on-disk format.
+  await writeBytesAtomically(
     extractedPath(input.documentId),
     JSON.stringify(payload),
-    "utf8",
+    { encoding: "utf8", label: "extracted.json" },
   );
 }
 
@@ -111,7 +112,9 @@ export async function saveLibraryPdf(
 ): Promise<void> {
   const dir = documentDir(documentId);
   await mkdir(dir, { recursive: true });
-  await writeFile(pdfPath(documentId), bytes);
+  await writeBytesAtomically(pdfPath(documentId), bytes, {
+    label: "source.pdf",
+  });
 }
 
 export async function saveLibraryImage(
@@ -120,7 +123,9 @@ export async function saveLibraryImage(
 ): Promise<void> {
   const dir = documentDir(documentId);
   await mkdir(dir, { recursive: true });
-  await writeFile(imagePath(documentId), bytes);
+  await writeBytesAtomically(imagePath(documentId), bytes, {
+    label: "source.image",
+  });
 }
 
 export async function readLibraryExtracted(

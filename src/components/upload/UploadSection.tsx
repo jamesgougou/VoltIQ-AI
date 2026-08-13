@@ -29,12 +29,22 @@ import {
   uploadLibraryPdf,
 } from "@/lib/rag/libraryClient";
 import {
+  collectEnabledManagedIds,
   formatRetrievalScopeLabel,
   inferDocumentType,
+  pruneRetrievalScope,
   resolveLibrarySourceKind,
   resolveRetrievalDocumentIds,
   type RetrievalScope,
 } from "@/lib/rag/libraryMeta";
+import {
+  BULK_DELETE_CONFIRM_MESSAGE,
+  CLEAR_ALL_CONFIRM_MESSAGE,
+  bulkDeleteUiRemovals,
+  decideAfterPersistAttempt,
+  shouldDeletePersistedDocumentOnRemove,
+  shouldProceedWithDestructiveAction,
+} from "@/lib/rag/uploadLifecycle";
 import {
   clearPdfDocumentCache,
   destroyCachedPdfDocument,
@@ -228,6 +238,27 @@ export function UploadSection() {
 
     const documentId = crypto.randomUUID();
 
+    try {
+      await uploadLibraryPdf(documentId, file);
+    } catch (error) {
+      console.error("Failed to persist PDF bytes:", error);
+      URL.revokeObjectURL(blobUrl);
+      const decision = decideAfterPersistAttempt(
+        false,
+        error instanceof Error
+          ? error.message
+          : "Unable to save the uploaded PDF. It was not added to your library.",
+      );
+      setToastMessage(decision.errorMessage);
+      return;
+    }
+
+    const decision = decideAfterPersistAttempt(true);
+    if (!decision.showInLibrary) {
+      URL.revokeObjectURL(blobUrl);
+      return;
+    }
+
     setPdfs((current) => [
       ...current,
       {
@@ -240,15 +271,31 @@ export function UploadSection() {
         documentType: inferDocumentType(result.fileName),
       },
     ]);
-
-    try {
-      await uploadLibraryPdf(documentId, file);
-    } catch (error) {
-      console.error("Failed to persist PDF bytes:", error);
-    }
   }
 
-  function handlePdfRemove(id: string) {
+  async function handlePdfRemove(id: string) {
+    if (shouldDeletePersistedDocumentOnRemove()) {
+      try {
+        await deleteDocumentFromRag(id);
+      } catch (error) {
+        console.error("Failed to delete document:", error);
+        setToastMessage(
+          error instanceof Error
+            ? error.message
+            : "Unable to delete the document from the library.",
+        );
+        return;
+      }
+    }
+
+    indexedHashesRef.current.delete(id);
+    indexingInFlightRef.current.delete(id);
+    setIndexStates((current) => {
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+
     setPdfs((current) => {
       const target = current.find((pdf) => pdf.id === id);
       if (target?.blobUrl) {
@@ -317,6 +364,27 @@ export function UploadSection() {
       const documentId = crypto.randomUUID();
       const previewUrl = URL.createObjectURL(file);
 
+      try {
+        await uploadLibraryImage(documentId, file, file.type || "image/jpeg");
+      } catch (error) {
+        console.error("Failed to persist image bytes:", error);
+        URL.revokeObjectURL(previewUrl);
+        const decision = decideAfterPersistAttempt(
+          false,
+          error instanceof Error
+            ? error.message
+            : "Unable to save the uploaded image. It was not added to your library.",
+        );
+        setToastMessage(decision.errorMessage);
+        continue;
+      }
+
+      const decision = decideAfterPersistAttempt(true);
+      if (!decision.showInLibrary || !decision.allowIndexing) {
+        URL.revokeObjectURL(previewUrl);
+        continue;
+      }
+
       setImages((current) => [
         ...current,
         {
@@ -329,21 +397,32 @@ export function UploadSection() {
           enabled: true,
         },
       ]);
-
-      try {
-        await uploadLibraryImage(documentId, file, file.type || "image/jpeg");
-      } catch (error) {
-        console.error("Failed to persist image bytes:", error);
-        setToastMessage(
-          error instanceof Error
-            ? error.message
-            : "Unable to save the uploaded image.",
-        );
-      }
     }
   }
 
-  function handleImageRemove(id: string) {
+  async function handleImageRemove(id: string) {
+    if (shouldDeletePersistedDocumentOnRemove()) {
+      try {
+        await deleteDocumentFromRag(id);
+      } catch (error) {
+        console.error("Failed to delete image:", error);
+        setToastMessage(
+          error instanceof Error
+            ? error.message
+            : "Unable to delete the image from the library.",
+        );
+        return;
+      }
+    }
+
+    indexedHashesRef.current.delete(id);
+    indexingInFlightRef.current.delete(id);
+    setIndexStates((current) => {
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+
     setImages((current) => {
       const target = current.find((image) => image.id === id);
       if (target?.previewUrl.startsWith("blob:")) {
@@ -362,6 +441,26 @@ export function UploadSection() {
   }
 
   async function handleClearAll() {
+    if (
+      !shouldProceedWithDestructiveAction(
+        window.confirm(CLEAR_ALL_CONFIRM_MESSAGE),
+      )
+    ) {
+      return;
+    }
+
+    try {
+      await clearRagIndex();
+    } catch (error) {
+      console.error("Failed to clear document index:", error);
+      setToastMessage(
+        error instanceof Error
+          ? error.message
+          : "Unable to clear the Knowledge Library. Your documents were left unchanged.",
+      );
+      return;
+    }
+
     for (const pdf of pdfs) {
       if (pdf.blobUrl) {
         URL.revokeObjectURL(pdf.blobUrl);
@@ -374,6 +473,8 @@ export function UploadSection() {
     }
     void clearPdfDocumentCache();
 
+    indexedHashesRef.current.clear();
+    indexingInFlightRef.current.clear();
     setPdfs([]);
     setImages([]);
     setHasText(false);
@@ -381,14 +482,6 @@ export function UploadSection() {
     setIndexStates({});
     setToastMessage(null);
     setResetKey((key) => key + 1);
-
-    try {
-      await clearRagIndex();
-      indexedHashesRef.current.clear();
-      indexingInFlightRef.current.clear();
-    } catch (error) {
-      console.error("Failed to clear document index:", error);
-    }
   }
 
   const hasDocuments = pdfs.length > 0 || images.length > 0 || hasText;
@@ -461,42 +554,21 @@ export function UploadSection() {
     retrievalDocumentIds.length > 0 ? retrievalDocumentIds : managedDocumentIds,
   );
 
-  // Keep current-document scope pointed at a valid enabled PDF.
+  // Keep retrieval scope pointed at valid enabled PDFs, images, and pasted text.
   useEffect(() => {
-    const enabledIds = pdfs
-      .filter((pdf) => pdf.enabled !== false)
-      .map((pdf) => pdf.id);
+    const enabledIds = collectEnabledManagedIds({
+      pdfs,
+      images,
+      includePastedText: Boolean(pastedText.trim()),
+      pastedTextId: PASTED_TEXT_DOCUMENT_ID,
+    });
 
     const timeoutId = window.setTimeout(() => {
-      setRetrievalScope((current) => {
-        const nextCurrent =
-          current.currentDocumentId &&
-          enabledIds.includes(current.currentDocumentId)
-            ? current.currentDocumentId
-            : (enabledIds[0] ?? null);
-
-        const nextSelected = (current.selectedDocumentIds ?? []).filter((id) =>
-          enabledIds.includes(id),
-        );
-
-        if (
-          nextCurrent === current.currentDocumentId &&
-          nextSelected.length === (current.selectedDocumentIds ?? []).length
-        ) {
-          return current;
-        }
-
-        return {
-          ...current,
-          currentDocumentId: nextCurrent,
-          selectedDocumentIds:
-            nextSelected.length > 0 ? nextSelected : enabledIds,
-        };
-      });
+      setRetrievalScope((current) => pruneRetrievalScope(current, enabledIds));
     }, 0);
 
     return () => window.clearTimeout(timeoutId);
-  }, [pdfs]);
+  }, [pdfs, images, pastedText]);
 
   const indexDocumentEntry = useCallback(
     async (
@@ -1387,39 +1459,53 @@ export function UploadSection() {
       return;
     }
 
-    const idSet = new Set(documentIds);
-
-    setPdfs((current) => {
-      for (const pdf of current) {
-        if (idSet.has(pdf.id) && pdf.blobUrl) {
-          URL.revokeObjectURL(pdf.blobUrl);
-          void destroyCachedPdfDocument(pdf.id);
-        }
-      }
-      return current.filter((pdf) => !idSet.has(pdf.id));
-    });
-
-    for (const documentId of documentIds) {
-      indexedHashesRef.current.delete(documentId);
-      indexingInFlightRef.current.delete(documentId);
+    if (
+      !shouldProceedWithDestructiveAction(
+        window.confirm(BULK_DELETE_CONFIRM_MESSAGE),
+      )
+    ) {
+      return;
     }
 
-    setIndexStates((current) => {
-      const next = { ...current };
-      for (const documentId of documentIds) {
-        delete next[documentId];
+    void (async () => {
+      try {
+        await bulkLibraryAction("delete", documentIds);
+      } catch (error) {
+        console.error("Failed bulk delete:", error);
+        setToastMessage(
+          error instanceof Error
+            ? error.message
+            : "Unable to delete selected documents.",
+        );
+        return;
       }
-      return next;
-    });
 
-    void bulkLibraryAction("delete", documentIds).catch((error) => {
-      console.error("Failed bulk delete:", error);
-      setToastMessage(
-        error instanceof Error
-          ? error.message
-          : "Unable to delete selected documents.",
-      );
-    });
+      const removedIds = bulkDeleteUiRemovals(documentIds, true);
+      const idSet = new Set(removedIds);
+
+      setPdfs((current) => {
+        for (const pdf of current) {
+          if (idSet.has(pdf.id) && pdf.blobUrl) {
+            URL.revokeObjectURL(pdf.blobUrl);
+            void destroyCachedPdfDocument(pdf.id);
+          }
+        }
+        return current.filter((pdf) => !idSet.has(pdf.id));
+      });
+
+      for (const documentId of removedIds) {
+        indexedHashesRef.current.delete(documentId);
+        indexingInFlightRef.current.delete(documentId);
+      }
+
+      setIndexStates((current) => {
+        const next = { ...current };
+        for (const documentId of removedIds) {
+          delete next[documentId];
+        }
+        return next;
+      });
+    })();
   }, []);
 
   const handleBulkReindex = useCallback(
@@ -1482,7 +1568,7 @@ export function UploadSection() {
               pdfs={pdfs}
               indexStates={indexStates}
               onAdd={handlePdfAdd}
-              onRemove={handlePdfRemove}
+              onRemove={(id) => void handlePdfRemove(id)}
               onRetry={retryDocument}
               onCancel={(documentId) => void cancelDocument(documentId)}
               onParseCancelled={() =>
@@ -1499,7 +1585,7 @@ export function UploadSection() {
               images={images}
               indexStates={indexStates}
               onAdd={(files) => void handleImageAdd(files)}
-              onRemove={handleImageRemove}
+              onRemove={(id) => void handleImageRemove(id)}
               onOpen={handleImageOpen}
               onRetry={retryDocument}
               onCancel={(documentId) => void cancelDocument(documentId)}

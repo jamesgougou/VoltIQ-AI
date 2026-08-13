@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { createWriteStream } from "node:fs";
-import { rename, unlink } from "node:fs/promises";
+import { rename, unlink, writeFile } from "node:fs/promises";
 import { once } from "node:events";
 import path from "node:path";
 
@@ -87,6 +87,41 @@ export async function renameWithRetry(
 export function createUniqueTempPath(directory: string, baseName: string): string {
   const unique = `${process.pid}.${Date.now()}.${randomBytes(4).toString("hex")}`;
   return path.join(directory, `${baseName}.${unique}.tmp`);
+}
+
+/**
+ * Write a complete buffer/string to a temp file, then atomically rename into place.
+ */
+export async function writeBytesAtomically(
+  destinationPath: string,
+  data: string | Uint8Array,
+  options?: { encoding?: BufferEncoding; label?: string },
+): Promise<void> {
+  const directory = path.dirname(destinationPath);
+  const baseName = path.basename(destinationPath);
+  const tempPath = createUniqueTempPath(directory, baseName);
+  const label = options?.label ?? baseName;
+
+  try {
+    if (typeof data === "string") {
+      await writeFile(tempPath, data, options?.encoding ?? "utf8");
+    } else {
+      await writeFile(tempPath, data);
+    }
+
+    await renameWithRetry(tempPath, destinationPath, { label });
+  } catch (error) {
+    await unlink(tempPath).catch(() => undefined);
+
+    if (error instanceof StorageWriteError) {
+      throw error;
+    }
+
+    throw new StorageWriteError(
+      `Unable to update local document storage (${label}). Please try again in a moment.`,
+      { cause: error },
+    );
+  }
 }
 
 /**

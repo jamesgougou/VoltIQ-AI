@@ -29,7 +29,41 @@ const FIGURE_PATTERN = /\bfigure\s*(\d+(?:\.\d+)*)\b/gi;
 const APPENDIX_PATTERN = /\bappendix\s*([a-z0-9]+)\b/gi;
 const STANDARD_PATTERN =
   /\b(?:as\/nzs|asnzs|as)\s*(\d+(?:\.\d+)*(?::\d+)?|\d+)\b/gi;
-const BARE_CLAUSE_PATTERN = /\b(\d+\.\d+(?:\.\d+)*)\b/g;
+/** Hierarchical bare clause IDs only (e.g. 2.5.1), never two-part 2.5. */
+const HIERARCHICAL_BARE_CLAUSE_PATTERN = /\b(\d+\.\d+\.\d+(?:\.\d+)*)\b/g;
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function isHierarchicalClauseId(value: string): boolean {
+  return value.split(".").length >= 3;
+}
+
+function clauseSearchTerms(value: string): string[] {
+  const normalized = value.toLowerCase();
+  const terms = [
+    `clause ${normalized}`,
+    `cl. ${normalized}`,
+    `section ${normalized}`,
+    `sec. ${normalized}`,
+  ];
+
+  // Hierarchical IDs are distinctive; two-part bare numbers are not.
+  if (isHierarchicalClauseId(normalized)) {
+    terms.push(normalized);
+  }
+
+  return terms;
+}
+
+function createClauseTarget(value: string): ExactMatchTarget {
+  return {
+    type: "clause",
+    label: `Clause ${value}`,
+    searchTerms: clauseSearchTerms(value),
+  };
+}
 
 function collectMatches(
   pattern: RegExp,
@@ -44,6 +78,11 @@ function collectMatches(
     const value = match[1]?.trim();
 
     if (!value) {
+      continue;
+    }
+
+    if (type === "clause") {
+      matches.push(createClauseTarget(value));
       continue;
     }
 
@@ -75,23 +114,15 @@ function detectExactMatches(query: string): ExactMatchTarget[] {
     return dedupeExactMatches(matches);
   }
 
-  if (/\bclause\b/i.test(query)) {
-    for (const match of query.matchAll(BARE_CLAUSE_PATTERN)) {
-      const value = match[1];
+  // Bare hierarchical IDs (2.5.1) only — never promote bare "2.5".
+  for (const match of query.matchAll(HIERARCHICAL_BARE_CLAUSE_PATTERN)) {
+    const value = match[1];
 
-      if (!value) {
-        continue;
-      }
-
-      matches.push({
-        type: "clause",
-        label: `Clause ${value}`,
-        searchTerms: [
-          `clause ${value}`.toLowerCase(),
-          value.toLowerCase(),
-        ],
-      });
+    if (!value) {
+      continue;
     }
+
+    matches.push(createClauseTarget(value));
   }
 
   return dedupeExactMatches(matches);
@@ -181,10 +212,39 @@ export function analyzeQuery(query: string): QueryProfile {
   };
 }
 
+function clauseValueFromTarget(target: ExactMatchTarget): string {
+  return target.label.replace(/^clause\s+/i, "").trim().toLowerCase();
+}
+
+function chunkContainsClauseMatch(
+  chunkText: string,
+  value: string,
+): boolean {
+  const normalized = chunkText.toLowerCase();
+  const escaped = escapeRegExp(value);
+  const prefixed = new RegExp(
+    `\\b(?:clause|cl\\.|section|sec\\.)\\s*${escaped}\\b`,
+  );
+
+  if (prefixed.test(normalized)) {
+    return true;
+  }
+
+  if (isHierarchicalClauseId(value)) {
+    return new RegExp(`\\b${escaped}\\b`).test(normalized);
+  }
+
+  return false;
+}
+
 export function chunkContainsExactMatch(
   chunkText: string,
   target: ExactMatchTarget,
 ): boolean {
+  if (target.type === "clause") {
+    return chunkContainsClauseMatch(chunkText, clauseValueFromTarget(target));
+  }
+
   const normalized = chunkText.toLowerCase();
 
   return target.searchTerms.some((term) => normalized.includes(term));

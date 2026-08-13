@@ -172,6 +172,62 @@ export function resolveRetrievalDocumentIds(
   return enabled.map((document) => document.id);
 }
 
+/**
+ * Enabled managed document IDs for retrieval-scope sync (PDFs, images, pasted text).
+ */
+export function collectEnabledManagedIds(input: {
+  pdfs: Array<{ id: string; enabled?: boolean }>;
+  images: Array<{ id: string; enabled?: boolean }>;
+  includePastedText?: boolean;
+  pastedTextId?: string;
+}): string[] {
+  const ids = [
+    ...input.pdfs
+      .filter((pdf) => pdf.enabled !== false)
+      .map((pdf) => pdf.id),
+    ...input.images
+      .filter((image) => image.enabled !== false)
+      .map((image) => image.id),
+  ];
+
+  if (input.includePastedText && input.pastedTextId) {
+    ids.push(input.pastedTextId);
+  }
+
+  return ids;
+}
+
+/**
+ * Keep current/selected scope IDs that remain enabled; never PDF-only.
+ */
+export function pruneRetrievalScope(
+  scope: RetrievalScope,
+  enabledIds: string[],
+): RetrievalScope {
+  const enabledSet = new Set(enabledIds);
+  const nextCurrent =
+    scope.currentDocumentId && enabledSet.has(scope.currentDocumentId)
+      ? scope.currentDocumentId
+      : (enabledIds[0] ?? null);
+
+  const nextSelected = (scope.selectedDocumentIds ?? []).filter((id) =>
+    enabledSet.has(id),
+  );
+
+  if (
+    nextCurrent === scope.currentDocumentId &&
+    nextSelected.length === (scope.selectedDocumentIds ?? []).length
+  ) {
+    return scope;
+  }
+
+  return {
+    ...scope,
+    currentDocumentId: nextCurrent,
+    selectedDocumentIds: nextSelected.length > 0 ? nextSelected : enabledIds,
+  };
+}
+
 export function formatRetrievalScopeLabel(
   documents: Array<{ id: string; name: string; enabled?: boolean }>,
   scope: RetrievalScope,
