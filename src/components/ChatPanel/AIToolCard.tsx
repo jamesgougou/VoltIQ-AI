@@ -3,7 +3,7 @@ import { AIToolIconDisplay } from "./AIToolIcons";
 
 type AIToolCardProps = {
   tool: AITool;
-  onSelect: (prompt: string) => void;
+  onSelect: (tool: AITool) => void;
   disabled?: boolean;
 };
 
@@ -11,7 +11,7 @@ export function AIToolCard({ tool, onSelect, disabled = false }: AIToolCardProps
   return (
     <button
       type="button"
-      onClick={() => onSelect(tool.prompt)}
+      onClick={() => onSelect(tool)}
       disabled={disabled}
       className="flex h-full flex-col rounded-lg border border-slate-200 bg-white p-3 text-left shadow-sm transition-colors hover:border-violet-200 hover:bg-violet-50/40 disabled:cursor-not-allowed disabled:opacity-50"
       aria-label={`${tool.title}: ${tool.description}`}

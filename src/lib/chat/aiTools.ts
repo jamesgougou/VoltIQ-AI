@@ -17,9 +17,9 @@ export const AI_TOOLS: AITool[] = [
   {
     id: "generate-questions",
     title: "Generate Questions",
-    description: "Create study questions from uploaded documents.",
-    prompt:
-      "Using only my uploaded documents, generate 20 practical study questions for an Australian electrician or apprentice. Prefer inspection, testing, protection, and standards topics that appear in the documents. Do not invent AS/NZS clause numbers that are not in the documents.",
+    description: "Open Study Mode to create an interactive quiz from your documents.",
+    // Prompt unused — this tool deep-links into Study Mode (single source of truth).
+    prompt: "",
     icon: "questions",
   },
   {

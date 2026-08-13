@@ -1,3 +1,4 @@
+import { markObjectiveAnswer } from "@/lib/study/deterministicMark";
 import type {
   GenerateStudyRequest,
   GenerateStudyResponse,
@@ -31,6 +32,14 @@ export async function generateStudyMaterial(
 export async function markStudyMaterial(
   request: MarkStudyRequest,
 ): Promise<MarkResult> {
+  const deterministic = markObjectiveAnswer(
+    request.question,
+    request.userAnswer,
+  );
+  if (deterministic) {
+    return deterministic;
+  }
+
   const response = await fetch("/api/study/mark", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

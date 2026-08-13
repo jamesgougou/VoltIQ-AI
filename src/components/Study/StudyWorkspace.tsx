@@ -5,11 +5,18 @@ import { generateStudyMaterial } from "@/lib/study/client";
 import {
   getWeakTopics,
   loadStudyProgress,
-  recordAnswerInProgress,
-  recordSessionSummary,
   saveStudyProgress,
   toggleBookmark,
 } from "@/lib/study/progressStorage";
+import {
+  applyAnswerToProgressState,
+  applySessionCompleteToProgressState,
+} from "@/lib/study/progressUpdates";
+import {
+  clearActiveStudySession,
+  loadActiveStudySession,
+  saveActiveStudySession,
+} from "@/lib/study/sessionResume";
 import {
   explainSimplyPrompt,
   tutorPrompt,
@@ -56,21 +63,62 @@ export function StudyWorkspace({
   onSendTutorPrompt,
   disabled = false,
 }: StudyWorkspaceProps) {
+  const [boot] = useState(() => {
+    const restored = loadActiveStudySession();
+    return {
+      restored,
+      difficulty: (restored?.difficulty ?? "electrician") as StudyDifficulty,
+      session: restored?.session ?? null,
+      examComplete: restored?.examComplete ?? null,
+      autoStartedMode:
+        restored?.session || restored?.examComplete
+          ? restored.activeMode
+          : null,
+      skipPersistOnce: Boolean(restored),
+    };
+  });
+
   const [progress, setProgress] = useState<StudyProgress>(() =>
     loadStudyProgress(),
   );
-  const [difficulty, setDifficulty] =
-    useState<StudyDifficulty>("electrician");
-  const [session, setSession] = useState<StudySession | null>(null);
-  const [examComplete, setExamComplete] = useState<StudySession | null>(null);
+  const [difficulty, setDifficulty] = useState<StudyDifficulty>(
+    boot.difficulty,
+  );
+  const [session, setSession] = useState<StudySession | null>(boot.session);
+  const [examComplete, setExamComplete] = useState<StudySession | null>(
+    boot.examComplete,
+  );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const autoStartedModeRef = useRef<StudyModeId | null>(null);
+  const autoStartedModeRef = useRef<StudyModeId | null>(boot.autoStartedMode);
+  const skipPersistOnceRef = useRef(boot.skipPersistOnce);
+  const restoredModeRef = useRef(boot.restored?.activeMode ?? null);
 
-  const persistProgress = useCallback((next: StudyProgress) => {
-    setProgress(next);
-    saveStudyProgress(next);
+  const persistProgress = useCallback((updater: (prev: StudyProgress) => StudyProgress) => {
+    setProgress((previous) => {
+      const next = updater(previous);
+      saveStudyProgress(next);
+      return next;
+    });
   }, []);
+
+  useEffect(() => {
+    if (skipPersistOnceRef.current) {
+      skipPersistOnceRef.current = false;
+      const restoredMode = restoredModeRef.current;
+      if (restoredMode && restoredMode !== activeMode) {
+        onModeChange(restoredMode);
+      }
+      return;
+    }
+
+    saveActiveStudySession({
+      activeMode,
+      difficulty,
+      session,
+      examComplete,
+    });
+  }, [activeMode, difficulty, session, examComplete, onModeChange]);
 
   const startQuiz = useCallback(
     async (options?: {
@@ -217,8 +265,13 @@ export function StudyWorkspace({
     result: MarkResult,
     elapsedMs: number,
   ) {
-    persistProgress(
-      recordAnswerInProgress(progress, question.topic, result, elapsedMs),
+    persistProgress((previous) =>
+      applyAnswerToProgressState(
+        previous,
+        question.topic,
+        result,
+        elapsedMs,
+      ),
     );
   }
 
@@ -227,9 +280,11 @@ export function StudyWorkspace({
       ...completed,
       endedAt: completed.endedAt ?? new Date().toISOString(),
     };
-    persistProgress(
-      recordSessionSummary(progress, withEnd, withEnd.difficulty),
+    persistProgress((previous) =>
+      applySessionCompleteToProgressState(previous, withEnd),
     );
+
+    clearActiveStudySession();
 
     if (withEnd.mode === "exam") {
       setExamComplete(withEnd);
@@ -239,6 +294,13 @@ export function StudyWorkspace({
 
     setSession(null);
     onModeChange("progress");
+  }
+
+  function abandonSession() {
+    setSession(null);
+    setExamComplete(null);
+    clearActiveStudySession();
+    onModeChange("idle");
   }
 
   function handleFollowUp(action: FollowUpAction, question: StudyQuestion) {
@@ -307,14 +369,10 @@ export function StudyWorkspace({
         {activeMode !== "progress" && activeMode !== "history" && (
           <button
             type="button"
-            onClick={() => {
-              setSession(null);
-              setExamComplete(null);
-              onModeChange("idle");
-            }}
+            onClick={abandonSession}
             className="text-[11px] text-slate-500 hover:text-slate-800"
           >
-            Hide Study Panel
+            Close Study Session
           </button>
         )}
       </div>
@@ -334,7 +392,7 @@ export function StudyWorkspace({
       {!loading && activeMode === "exam" && !session && !examComplete && (
         <ExamSetup
           disabled={disabled || documentIds.length === 0}
-          onCancel={() => onModeChange("idle")}
+          onCancel={abandonSession}
           onStart={(options) => {
             void startQuiz({
               mode: "exam",
@@ -353,6 +411,7 @@ export function StudyWorkspace({
           session={examComplete}
           onClose={() => {
             setExamComplete(null);
+            clearActiveStudySession();
             onModeChange("progress");
           }}
           onReview={() => {
@@ -372,10 +431,7 @@ export function StudyWorkspace({
             onAnswered={handleAnswered}
             onComplete={handleComplete}
             onFollowUp={handleFollowUp}
-            onClose={() => {
-              setSession(null);
-              onModeChange("idle");
-            }}
+            onClose={abandonSession}
           />
         )}
 
@@ -384,12 +440,9 @@ export function StudyWorkspace({
           cards={session.flashcards}
           bookmarks={progress.bookmarks}
           onToggleBookmark={(cardId) =>
-            persistProgress(toggleBookmark(progress, cardId))
+            persistProgress((previous) => toggleBookmark(previous, cardId))
           }
-          onClose={() => {
-            setSession(null);
-            onModeChange("idle");
-          }}
+          onClose={abandonSession}
         />
       )}
 
@@ -413,7 +466,6 @@ export function StudyWorkspace({
               disabled={disabled}
               onClick={() => {
                 onSendTutorPrompt(explainSimplyPrompt());
-                onModeChange("idle");
               }}
               className="rounded-md bg-violet-600 px-3 py-1.5 text-xs font-semibold text-white"
             >
@@ -425,7 +477,6 @@ export function StudyWorkspace({
               onClick={() => {
                 const topic = getWeakTopics(progress)[0] || "Maximum Demand";
                 onSendTutorPrompt(tutorPrompt(topic));
-                onModeChange("idle");
               }}
               className="rounded-md border border-violet-200 bg-violet-50 px-3 py-1.5 text-xs font-semibold text-violet-700"
             >

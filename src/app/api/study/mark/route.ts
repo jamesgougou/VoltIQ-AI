@@ -1,3 +1,4 @@
+import { markObjectiveAnswer } from "@/lib/study/deterministicMark";
 import { markStudyAnswer } from "@/lib/study/engine";
 import type { MarkStudyRequest } from "@/types/study";
 
@@ -22,6 +23,14 @@ export async function POST(request: Request) {
   }
 
   try {
+    const deterministic = markObjectiveAnswer(
+      body.question,
+      body.userAnswer,
+    );
+    if (deterministic) {
+      return Response.json(deterministic);
+    }
+
     const result = await markStudyAnswer({
       question: body.question,
       userAnswer: body.userAnswer,

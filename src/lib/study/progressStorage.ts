@@ -20,6 +20,15 @@ const EMPTY_PROGRESS: StudyProgress = {
   history: [],
 };
 
+/** Test helper — empty progress clone. */
+export const EMPTY_STUDY_PROGRESS_FOR_TESTS: StudyProgress = {
+  ...EMPTY_PROGRESS,
+  topics: {},
+  bookmarks: [],
+  history: [],
+  scores: [],
+};
+
 function emptyTopic(): TopicStats {
   return { attempts: 0, correct: 0, partial: 0, incorrect: 0 };
 }

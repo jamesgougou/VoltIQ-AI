@@ -1,8 +1,22 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChatPanel } from "@/components/ChatPanel";
+import { ChatPanel, type ChatBridge } from "@/components/ChatPanel";
+import { CalculatorsPanel } from "@/components/Calculators";
+import { StudyPanel } from "@/components/Study";
 import { PDFViewer, PDFViewerProvider } from "@/components/PDFViewer";
+import { WorkspaceShell } from "@/components/workspace/WorkspaceShell";
+import {
+  buildExplainPrompt,
+  type CalcResult,
+  type CalculatorId,
+} from "@/lib/calculators";
+import {
+  DEFAULT_WORKSPACE_MODE,
+  resolveWorkspaceModeSelection,
+  type WorkspaceMode,
+} from "@/lib/workspace/modes";
+import type { StudyModeId } from "@/types/study";
 import {
   cancelDocumentFromRag,
   clearRagIndex,
@@ -119,6 +133,14 @@ export function UploadSection() {
   const [resetKey, setResetKey] = useState(0);
   const [hasText, setHasText] = useState(false);
   const [pastedText, setPastedText] = useState("");
+  const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>(
+    DEFAULT_WORKSPACE_MODE,
+  );
+  const [studyMode, setStudyMode] = useState<StudyModeId>("idle");
+  const [calculatorFocusId, setCalculatorFocusId] =
+    useState<CalculatorId | null>(null);
+  const [calculatorFocusToken, setCalculatorFocusToken] = useState(0);
+  const chatBridgeRef = useRef<ChatBridge | null>(null);
   const [indexStates, setIndexStates] = useState<
     Record<string, DocumentIndexState>
   >({});
@@ -1517,101 +1539,193 @@ export function UploadSection() {
     [retryDocument],
   );
 
+  const handleWorkspaceModeChange = useCallback((mode: WorkspaceMode) => {
+    setWorkspaceMode((current) => resolveWorkspaceModeSelection(current, mode));
+  }, []);
+
+  const openCalculatorMode = useCallback((calculatorId: CalculatorId) => {
+    setCalculatorFocusId(calculatorId);
+    setCalculatorFocusToken((token) => token + 1);
+    setWorkspaceMode("calculator");
+  }, []);
+
+  const openStudyMode = useCallback((mode: StudyModeId) => {
+    setStudyMode(mode);
+    setWorkspaceMode("study");
+  }, []);
+
+  const handleSendCalcResult = useCallback((result: CalcResult) => {
+    setWorkspaceMode("chat");
+    chatBridgeRef.current?.appendCalcResult(result);
+  }, []);
+
+  const handleExplainCalcResult = useCallback((result: CalcResult) => {
+    setWorkspaceMode("chat");
+    chatBridgeRef.current?.sendMessage(buildExplainPrompt(result));
+  }, []);
+
+  const handleTutorPrompt = useCallback((prompt: string) => {
+    setWorkspaceMode("chat");
+    chatBridgeRef.current?.sendMessage(prompt);
+  }, []);
+
+  const librarySection = (
+    <section
+      className="rounded-xl border border-slate-200 bg-white shadow-sm"
+      aria-labelledby="documents-heading"
+    >
+      <div className="flex items-center justify-between gap-3 border-b border-slate-100 px-4 py-3 sm:px-5">
+        <div>
+          <h2
+            id="documents-heading"
+            className="text-sm font-semibold text-slate-900"
+          >
+            Knowledge Library
+          </h2>
+          <p className="mt-0.5 text-xs text-slate-500">
+            Multi-document standards library ·{" "}
+            {formatRetrievalScopeLabel(
+              documents.map((document) => ({
+                id: document.id,
+                name: document.name,
+                enabled: document.enabled,
+              })),
+              retrievalScope,
+            )}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => void handleClearAll()}
+          className="shrink-0 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 transition-colors hover:border-red-200 hover:bg-red-50 hover:text-red-700 sm:text-sm"
+        >
+          Clear All
+        </button>
+      </div>
+
+      <div className="grid gap-3 p-3 sm:p-4 lg:grid-cols-3">
+        <DocumentLibraryPanel
+          key={`pdf-${resetKey}`}
+          pdfs={pdfs}
+          indexStates={indexStates}
+          onAdd={handlePdfAdd}
+          onRemove={(id) => void handlePdfRemove(id)}
+          onRetry={retryDocument}
+          onCancel={(documentId) => void cancelDocument(documentId)}
+          onParseCancelled={() =>
+            setToastMessage("Document indexing cancelled.")
+          }
+          onToggleEnabled={handleToggleEnabled}
+          onTagsChange={handleTagsChange}
+          onBulkEnable={handleBulkEnable}
+          onBulkDelete={handleBulkDelete}
+          onBulkReindex={handleBulkReindex}
+        />
+        <ImageUploadManager
+          key={`images-${resetKey}`}
+          images={images}
+          indexStates={indexStates}
+          onAdd={(files) => void handleImageAdd(files)}
+          onRemove={(id) => void handleImageRemove(id)}
+          onOpen={handleImageOpen}
+          onRetry={retryDocument}
+          onCancel={(documentId) => void cancelDocument(documentId)}
+        />
+        <div className="space-y-3">
+          <TextPasteManager
+            key={`text-${resetKey}`}
+            onHasContentChange={setHasText}
+            onTextChange={setPastedText}
+          />
+          {pastedText.trim() && indexStates[PASTED_TEXT_DOCUMENT_ID] && (
+            <DocumentIndexProgressCard
+              filename="Pasted Text"
+              state={indexStates[PASTED_TEXT_DOCUMENT_ID]}
+              onRetry={() => retryDocument(PASTED_TEXT_DOCUMENT_ID)}
+              onCancel={
+                indexStates[PASTED_TEXT_DOCUMENT_ID]?.status === "indexing"
+                  ? () => void cancelDocument(PASTED_TEXT_DOCUMENT_ID)
+                  : undefined
+              }
+              compact
+            />
+          )}
+        </div>
+      </div>
+    </section>
+  );
+
   return (
     <PDFViewerProvider sources={pdfSources}>
       <section className="flex flex-col gap-6">
-        <ChatPanel
-          hasDocuments={hasDocuments}
-          documents={documents}
-          indexStates={indexStates}
-          indexingInProgress={isRetrievalScopeIndexing}
-          retrievalScope={retrievalScope}
-          onRetrievalScopeChange={setRetrievalScope}
-        />
-
-        <section
-          className="rounded-xl border border-slate-200 bg-white shadow-sm"
-          aria-labelledby="documents-heading"
+        <WorkspaceShell
+          mode={workspaceMode}
+          onModeChange={handleWorkspaceModeChange}
         >
-          <div className="flex items-center justify-between gap-3 border-b border-slate-100 px-4 py-3 sm:px-5">
-            <div>
-              <h2
-                id="documents-heading"
-                className="text-sm font-semibold text-slate-900"
-              >
-                Knowledge Library
-              </h2>
-              <p className="mt-0.5 text-xs text-slate-500">
-                Multi-document standards library ·{" "}
-                {formatRetrievalScopeLabel(
-                  documents.map((document) => ({
-                    id: document.id,
-                    name: document.name,
-                    enabled: document.enabled,
-                  })),
-                  retrievalScope,
-                )}
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => void handleClearAll()}
-              className="shrink-0 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 transition-colors hover:border-red-200 hover:bg-red-50 hover:text-red-700 sm:text-sm"
-            >
-              Clear All
-            </button>
-          </div>
+          {workspaceMode === "chat" && (
+            <ChatPanel
+              hasDocuments={hasDocuments}
+              documents={documents}
+              indexStates={indexStates}
+              indexingInProgress={isRetrievalScopeIndexing}
+              retrievalScope={retrievalScope}
+              onRetrievalScopeChange={setRetrievalScope}
+              onRequestCalculatorMode={openCalculatorMode}
+              onRequestStudyMode={openStudyMode}
+              chatBridgeRef={chatBridgeRef}
+            />
+          )}
 
-          <div className="grid gap-3 p-3 sm:p-4 lg:grid-cols-3">
-            <DocumentLibraryPanel
-              key={`pdf-${resetKey}`}
-              pdfs={pdfs}
-              indexStates={indexStates}
-              onAdd={handlePdfAdd}
-              onRemove={(id) => void handlePdfRemove(id)}
-              onRetry={retryDocument}
-              onCancel={(documentId) => void cancelDocument(documentId)}
-              onParseCancelled={() =>
-                setToastMessage("Document indexing cancelled.")
-              }
-              onToggleEnabled={handleToggleEnabled}
-              onTagsChange={handleTagsChange}
-              onBulkEnable={handleBulkEnable}
-              onBulkDelete={handleBulkDelete}
-              onBulkReindex={handleBulkReindex}
-            />
-            <ImageUploadManager
-              key={`images-${resetKey}`}
-              images={images}
-              indexStates={indexStates}
-              onAdd={(files) => void handleImageAdd(files)}
-              onRemove={(id) => void handleImageRemove(id)}
-              onOpen={handleImageOpen}
-              onRetry={retryDocument}
-              onCancel={(documentId) => void cancelDocument(documentId)}
-            />
-            <div className="space-y-3">
-              <TextPasteManager
-                key={`text-${resetKey}`}
-                onHasContentChange={setHasText}
-                onTextChange={setPastedText}
+          {workspaceMode === "calculator" && (
+            <section
+              className="rounded-2xl border border-amber-200 bg-white p-4 shadow-sm sm:p-6"
+              aria-label="Electrical calculators"
+            >
+              <CalculatorsPanel
+                onSendResultToChat={handleSendCalcResult}
+                onExplainResult={handleExplainCalcResult}
+                explainDisabled={
+                  !hasDocuments || isRetrievalScopeIndexing
+                }
+                focusCalculatorId={calculatorFocusId}
+                focusToken={calculatorFocusToken}
               />
-              {pastedText.trim() && indexStates[PASTED_TEXT_DOCUMENT_ID] && (
-                <DocumentIndexProgressCard
-                  filename="Pasted Text"
-                  state={indexStates[PASTED_TEXT_DOCUMENT_ID]}
-                  onRetry={() => retryDocument(PASTED_TEXT_DOCUMENT_ID)}
-                  onCancel={
-                    indexStates[PASTED_TEXT_DOCUMENT_ID]?.status === "indexing"
-                      ? () => void cancelDocument(PASTED_TEXT_DOCUMENT_ID)
-                      : undefined
-                  }
-                  compact
-                />
-              )}
-            </div>
-          </div>
-        </section>
+            </section>
+          )}
+
+          {workspaceMode === "study" && (
+            <section
+              className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6"
+              aria-label="Study mode"
+            >
+              <StudyPanel
+                activeMode={studyMode}
+                onModeChange={setStudyMode}
+                documentIds={
+                  retrievalDocumentIds.length > 0
+                    ? retrievalDocumentIds
+                    : managedDocumentIds
+                }
+                onSendTutorPrompt={handleTutorPrompt}
+                hasDocuments={hasDocuments}
+                disabled={isRetrievalScopeIndexing}
+              />
+            </section>
+          )}
+
+          {workspaceMode === "library" && librarySection}
+
+          {workspaceMode === "inspection" && (
+            <section className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center">
+              <h2 className="text-sm font-semibold text-slate-700">
+                Inspection Mode
+              </h2>
+              <p className="mt-1 text-xs text-slate-500">
+                Reserved for a future release. This tab is not available yet.
+              </p>
+            </section>
+          )}
+        </WorkspaceShell>
 
         <IndexingToast
           message={toastMessage}

@@ -1,1 +1,1 @@
-export { ChatPanel } from "./ChatPanel";
+export { ChatPanel, type ChatBridge } from "./ChatPanel";

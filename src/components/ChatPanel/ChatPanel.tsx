@@ -1,8 +1,17 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MutableRefObject,
+} from "react";
 import { getDocumentExtractionError, hasUsableDocumentContent } from "@/lib/chat/buildPrompt";
-import { streamChatResponse } from "@/lib/chat/streamChat";
+import type { AITool } from "@/lib/chat/aiTools";
+import { formatStreamFailure } from "@/lib/chat/streamingUi";
+import { ChatStreamError, streamChatResponse } from "@/lib/chat/streamChat";
 import { resolveClientIndexingGateMessage, fetchDocumentIndexStatuses, mergeIndexStates } from "@/lib/rag/client";
 import {
   formatRetrievalScopeLabel,
@@ -10,7 +19,6 @@ import {
   type RetrievalScope,
 } from "@/lib/rag/libraryMeta";
 import {
-  buildExplainPrompt,
   CALCULATOR_REDIRECT_MESSAGE,
   formatCalcResultMarkdown,
   isCalculatorExplainPrompt,
@@ -23,12 +31,15 @@ import type { ChatMessage } from "@/types/chat";
 import type { DocumentContextItem } from "@/types/documentContext";
 import type { DocumentIndexState } from "@/types/rag";
 import type { StudyModeId } from "@/types/study";
-import { CalculatorsPanel } from "@/components/Calculators";
-import { StudyPanel } from "@/components/Study";
 import { AIToolsPanel } from "./AIToolsPanel";
 import { ChatHistory } from "./ChatHistory";
 import { ChatInput } from "./ChatInput";
 import { RetrievalScopeBar } from "./RetrievalScopeBar";
+
+export type ChatBridge = {
+  sendMessage: (text: string) => void;
+  appendCalcResult: (result: CalcResult) => void;
+};
 
 type ChatPanelProps = {
   hasDocuments?: boolean;
@@ -37,6 +48,9 @@ type ChatPanelProps = {
   indexingInProgress?: boolean;
   retrievalScope?: RetrievalScope;
   onRetrievalScopeChange?: (scope: RetrievalScope) => void;
+  onRequestCalculatorMode?: (calculatorId: CalculatorId) => void;
+  onRequestStudyMode?: (mode: StudyModeId) => void;
+  chatBridgeRef?: MutableRefObject<ChatBridge | null>;
 };
 
 function createMessage(
@@ -63,23 +77,19 @@ export function ChatPanel({
   indexingInProgress = false,
   retrievalScope = { mode: "all-enabled" },
   onRetrievalScopeChange,
+  onRequestCalculatorMode,
+  onRequestStudyMode,
+  chatBridgeRef,
 }: ChatPanelProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [aiToolsOpen, setAiToolsOpen] = useState(false);
   const [focusTrigger, setFocusTrigger] = useState(0);
-  const [studyMode, setStudyMode] = useState<StudyModeId>("idle");
-  const [calculatorFocusId, setCalculatorFocusId] =
-    useState<CalculatorId | null>(null);
-  const [calculatorFocusToken, setCalculatorFocusToken] = useState(0);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
   const previousHasDocuments = useRef(hasDocuments);
-  const previousIsLoading = useRef(isLoading);
-
-  const openCalculator = useCallback((id: CalculatorId) => {
-    setCalculatorFocusId(id);
-    setCalculatorFocusToken((current) => current + 1);
-  }, []);
+  const previousIsStreaming = useRef(isStreaming);
 
   const focusInput = useCallback(() => {
     setFocusTrigger((current) => current + 1);
@@ -119,7 +129,7 @@ export function ChatPanel({
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages, isLoading, scrollToBottom]);
+  }, [messages, isStreaming, scrollToBottom]);
 
   useEffect(() => {
     if (hasDocuments && !previousHasDocuments.current) {
@@ -129,25 +139,28 @@ export function ChatPanel({
   }, [hasDocuments, focusInput]);
 
   useEffect(() => {
-    if (previousIsLoading.current && !isLoading && hasDocuments) {
+    if (previousIsStreaming.current && !isStreaming && hasDocuments) {
       focusInput();
     }
-    previousIsLoading.current = isLoading;
-  }, [isLoading, hasDocuments, focusInput]);
+    previousIsStreaming.current = isStreaming;
+  }, [isStreaming, hasDocuments, focusInput]);
+
+  const stopStreaming = useCallback(() => {
+    abortRef.current?.abort();
+  }, []);
 
   const sendMessage = useCallback(
     async (messageOverride?: string) => {
       const trimmed = (messageOverride ?? input).trim();
-      if (!trimmed || isLoading) return;
+      if (!trimmed || isStreaming) return;
 
       // Free-form numerical calc requests never go to the LLM.
-      // Route users to the Electrical Calculators panel instead.
       if (
         isFreeFormCalculationRequest(trimmed) &&
         !isCalculatorExplainPrompt(trimmed)
       ) {
         const calculatorId = suggestedCalculatorId(trimmed);
-        openCalculator(calculatorId);
+        onRequestCalculatorMode?.(calculatorId);
         setInput("");
         setMessages((current) => [
           ...current,
@@ -157,7 +170,6 @@ export function ChatPanel({
         return;
       }
 
-      // Explain-with-AI and normal RAG chat still require documents.
       if (!hasDocuments || indexingInProgress) return;
 
       const userMessage = createMessage("user", trimmed);
@@ -166,11 +178,11 @@ export function ChatPanel({
 
       setMessages(nextMessages);
       setInput("");
-      setIsLoading(true);
+      setIsStreaming(true);
 
       const extractionError = getDocumentExtractionError(documents);
       if (extractionError) {
-        setIsLoading(false);
+        setIsStreaming(false);
         setMessages((prev) => [
           ...prev,
           createMessage("assistant", extractionError, assistantMessageId),
@@ -194,7 +206,7 @@ export function ChatPanel({
       );
 
       if (indexingGateMessage) {
-        setIsLoading(false);
+        setIsStreaming(false);
         setMessages((prev) => [
           ...prev,
           createMessage("assistant", indexingGateMessage, assistantMessageId),
@@ -206,6 +218,8 @@ export function ChatPanel({
       let hasStreamStarted = false;
       const hasTextDocuments = hasUsableDocumentContent(documents);
       const documentIds = retrievalDocumentIds;
+      const controller = new AbortController();
+      abortRef.current = controller;
 
       try {
         await streamChatResponse(
@@ -216,12 +230,13 @@ export function ChatPanel({
           {
             hasTextDocuments,
             documentIds,
+            signal: controller.signal,
             onChunk: (chunk) => {
               streamedContent += chunk;
 
+              // First chunk opens the assistant bubble — streaming continues.
               if (!hasStreamStarted) {
                 hasStreamStarted = true;
-                setIsLoading(false);
                 setMessages((prev) => [
                   ...prev,
                   createMessage(
@@ -264,35 +279,46 @@ export function ChatPanel({
           ]);
         }
       } catch (error) {
-        const errorMessage =
-          error instanceof Error
-            ? error.message
-            : "Something went wrong. Please try again.";
+        const formatted = formatStreamFailure(error, streamedContent);
 
-        if (hasStreamStarted) {
-          setMessages((prev) =>
-            prev.map((message) =>
-              message.id === assistantMessageId
-                ? {
-                    ...message,
-                    content: `${streamedContent}\n\n---\n\n**Error:** ${errorMessage}`,
-                  }
-                : message,
-            ),
-          );
+        if (hasStreamStarted || formatted.preserveContent) {
+          setMessages((prev) => {
+            const exists = prev.some(
+              (message) => message.id === assistantMessageId,
+            );
+            if (exists) {
+              return prev.map((message) =>
+                message.id === assistantMessageId
+                  ? { ...message, content: formatted.message }
+                  : message,
+              );
+            }
+            return [
+              ...prev,
+              createMessage("assistant", formatted.message, assistantMessageId),
+            ];
+          });
+        } else if (!(error instanceof ChatStreamError && error.reason === "cancelled")) {
+          setMessages((prev) => [
+            ...prev,
+            createMessage("assistant", formatted.message, assistantMessageId),
+          ]);
         } else {
           setMessages((prev) => [
             ...prev,
-            createMessage("assistant", errorMessage, assistantMessageId),
+            createMessage("assistant", formatted.message, assistantMessageId),
           ]);
         }
       } finally {
-        setIsLoading(false);
+        if (abortRef.current === controller) {
+          abortRef.current = null;
+        }
+        setIsStreaming(false);
       }
     },
     [
       input,
-      isLoading,
+      isStreaming,
       hasDocuments,
       messages,
       documents,
@@ -300,7 +326,7 @@ export function ChatPanel({
       retrievalDocumentIds,
       indexStates,
       indexingInProgress,
-      openCalculator,
+      onRequestCalculatorMode,
     ],
   );
 
@@ -308,34 +334,49 @@ export function ChatPanel({
     setInput(prompt);
   }
 
-  function handleTutorPrompt(prompt: string) {
-    void sendMessage(prompt);
-    focusInput();
+  function handleToolSelect(tool: AITool) {
+    if (tool.id === "generate-questions") {
+      onRequestStudyMode?.("quiz");
+      return;
+    }
+    void sendMessage(tool.prompt);
   }
 
-  function handleToolSelect(prompt: string) {
-    void sendMessage(prompt);
-  }
+  const appendCalcResult = useCallback(
+    (result: CalcResult) => {
+      setMessages((current) => [
+        ...current,
+        createMessage(
+          "assistant",
+          formatCalcResultMarkdown(result),
+          undefined,
+          undefined,
+          result,
+        ),
+      ]);
+      scrollToBottom();
+    },
+    [scrollToBottom],
+  );
 
-  function handleSendCalcResult(result: CalcResult) {
-    setMessages((current) => [
-      ...current,
-      createMessage(
-        "assistant",
-        formatCalcResultMarkdown(result),
-        undefined,
-        undefined,
-        result,
-      ),
-    ]);
-    scrollToBottom();
-  }
+  useEffect(() => {
+    if (!chatBridgeRef) {
+      return;
+    }
 
-  function handleExplainCalcResult(result: CalcResult) {
-    void sendMessage(buildExplainPrompt(result));
-  }
+    chatBridgeRef.current = {
+      sendMessage: (text: string) => {
+        void sendMessage(text);
+      },
+      appendCalcResult,
+    };
 
-  const hasConversation = messages.length > 0 || isLoading;
+    return () => {
+      chatBridgeRef.current = null;
+    };
+  }, [chatBridgeRef, sendMessage, appendCalcResult]);
+
+  const hasConversation = messages.length > 0 || isStreaming;
 
   return (
     <section
@@ -350,26 +391,31 @@ export function ChatPanel({
           AI Chat
         </h2>
         <p className="mt-0.5 text-xs text-slate-500">
-          Ask document and standards questions here. Use Electrical Calculators
-          above for numerical power, voltage drop, cable and demand calculations.
+          Ask document and standards questions. Use Calculator and Study modes
+          from the tabs above for numerical work and quizzes.
         </p>
       </div>
 
       <div className="border-b border-slate-100 px-4 py-3 sm:px-6">
-        <CalculatorsPanel
-          onSendResultToChat={handleSendCalcResult}
-          onExplainResult={handleExplainCalcResult}
-          explainDisabled={isLoading || !hasDocuments || indexingInProgress}
-          focusCalculatorId={calculatorFocusId}
-          focusToken={calculatorFocusToken}
-        />
-      </div>
-
-      <div className="border-b border-slate-100 px-4 py-3 sm:px-6">
-        <AIToolsPanel
-          onToolSelect={handleToolSelect}
-          disabled={isLoading || !hasDocuments}
-        />
+        <button
+          type="button"
+          onClick={() => setAiToolsOpen((open) => !open)}
+          className="flex w-full items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-left text-xs font-semibold text-slate-700 hover:bg-slate-100"
+          aria-expanded={aiToolsOpen}
+        >
+          <span>AI Tools</span>
+          <span className="font-normal text-slate-500">
+            {aiToolsOpen ? "Hide" : "Show"}
+          </span>
+        </button>
+        {aiToolsOpen && (
+          <div className="mt-3">
+            <AIToolsPanel
+              onToolSelect={handleToolSelect}
+              disabled={isStreaming || !hasDocuments}
+            />
+          </div>
+        )}
       </div>
 
       <div
@@ -377,28 +423,19 @@ export function ChatPanel({
           hasConversation ? "min-h-[min(480px,calc(100vh-20rem))]" : ""
         }`}
       >
-        <div className="border-b border-slate-100 px-4 py-3 sm:px-6">
-          <StudyPanel
-            activeMode={studyMode}
-            onModeChange={setStudyMode}
-            documentIds={retrievalDocumentIds}
-            onSendTutorPrompt={handleTutorPrompt}
-            hasDocuments={hasDocuments}
-            disabled={isLoading || indexingInProgress}
-          />
-        </div>
-
         <ChatHistory
           messages={messages}
-          isLoading={isLoading}
+          isLoading={isStreaming}
           bottomRef={bottomRef}
         />
         <ChatInput
           value={input}
           onChange={setInput}
           onSend={() => void sendMessage()}
+          onStop={stopStreaming}
+          isStreaming={isStreaming}
           onPromptSelect={handlePromptSelect}
-          disabled={isLoading}
+          disabled={isStreaming}
           inputDisabled={!hasDocuments || indexingInProgress}
           placeholder={
             indexingInProgress
@@ -408,7 +445,7 @@ export function ChatPanel({
           helperText={
             indexingInProgress
               ? "Document indexing in progress..."
-              : "For numerical calculations use Electrical Calculators · Enter to send"
+              : "For numerical calculations use Calculator mode · Enter to send"
           }
           focusTrigger={focusTrigger}
           scopeBar={
@@ -418,7 +455,7 @@ export function ChatPanel({
                 documents={scopeDocuments}
                 searchingLabel={searchingLabel}
                 onChange={onRetrievalScopeChange}
-                disabled={isLoading}
+                disabled={isStreaming}
               />
             ) : null
           }
