@@ -1,6 +1,9 @@
 "use client";
 
+import { useState } from "react";
 import { STUDY_TOOLS } from "@/lib/studyTools";
+import { shouldDisableStudyStartActions } from "@/lib/study/studyUx";
+import { studyEmptyStateMessage } from "@/lib/workspace/emptyStateCopy";
 import type { StudyModeId } from "@/types/study";
 import { StudyCard } from "./StudyCard";
 import { StudyWorkspace } from "./StudyWorkspace";
@@ -10,7 +13,9 @@ type StudyPanelProps = {
   onModeChange: (mode: StudyModeId) => void;
   documentIds: string[];
   onSendTutorPrompt: (prompt: string) => void;
+  onRequestLibraryMode?: () => void;
   hasDocuments: boolean;
+  indexingInProgress?: boolean;
   disabled?: boolean;
 };
 
@@ -19,10 +24,18 @@ export function StudyPanel({
   onModeChange,
   documentIds,
   onSendTutorPrompt,
+  onRequestLibraryMode,
   hasDocuments,
+  indexingInProgress = false,
   disabled = false,
 }: StudyPanelProps) {
+  const [generationLoading, setGenerationLoading] = useState(false);
   const isDisabled = disabled || !hasDocuments;
+  const startsLocked = shouldDisableStudyStartActions(generationLoading);
+  const emptyMessage = studyEmptyStateMessage({
+    hasDocuments,
+    indexingInProgress,
+  });
 
   return (
     <div aria-labelledby="study-mode-heading" className="space-y-3">
@@ -38,22 +51,38 @@ export function StudyPanel({
         </p>
       </div>
 
-      {!hasDocuments && (
-        <p className="rounded-lg border border-dashed border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-500">
-          Upload documents to enable Study Mode.
-        </p>
-      )}
+      {emptyMessage ? (
+        <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-500">
+          <p>{emptyMessage}</p>
+          {onRequestLibraryMode ? (
+            <button
+              type="button"
+              onClick={onRequestLibraryMode}
+              className="mt-2 rounded-md border border-violet-200 bg-violet-50 px-2.5 py-1 text-[11px] font-semibold text-violet-800 hover:bg-violet-100"
+            >
+              Open Library
+            </button>
+          ) : null}
+        </div>
+      ) : null}
 
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
-        {STUDY_TOOLS.map((tool) => (
-          <StudyCard
-            key={tool.id}
-            tool={tool}
-            onSelect={onModeChange}
-            disabled={isDisabled && tool.id !== "progress" && tool.id !== "history"}
-            active={activeMode === tool.id}
-          />
-        ))}
+      <div className="grid grid-cols-2 gap-2 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+        {STUDY_TOOLS.map((tool) => {
+          const isProgressOrHistory =
+            tool.id === "progress" || tool.id === "history";
+          return (
+            <StudyCard
+              key={tool.id}
+              tool={tool}
+              onSelect={onModeChange}
+              disabled={
+                (isDisabled && !isProgressOrHistory) ||
+                (startsLocked && !isProgressOrHistory)
+              }
+              active={activeMode === tool.id}
+            />
+          );
+        })}
       </div>
 
       {activeMode !== "idle" && (
@@ -62,6 +91,7 @@ export function StudyPanel({
           documentIds={documentIds}
           onModeChange={onModeChange}
           onSendTutorPrompt={onSendTutorPrompt}
+          onLoadingChange={setGenerationLoading}
           disabled={isDisabled}
         />
       )}

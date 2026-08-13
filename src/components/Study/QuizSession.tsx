@@ -194,6 +194,12 @@ export function QuizSession({
           {question.prompt}
         </p>
 
+        {marking && (
+          <p className="mt-3 text-xs font-medium text-violet-700" role="status">
+            Marking…
+          </p>
+        )}
+
         {!result && question.type === "mcq" && question.options && (
           <div className="mt-3 space-y-2">
             {question.options.map((option) => (
@@ -229,7 +235,11 @@ export function QuizSession({
         {!result &&
           (question.type === "short" || question.type === "scenario") && (
             <div className="mt-3 space-y-2">
+              <label htmlFor={`study-answer-${question.id}`} className="sr-only">
+                Your answer
+              </label>
               <textarea
+                id={`study-answer-${question.id}`}
                 value={draft}
                 onChange={(event) => setDraft(event.target.value)}
                 rows={3}

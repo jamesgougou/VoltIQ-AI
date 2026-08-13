@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useRef, type ReactNode } from "react";
-import { QuickPrompts } from "./QuickPrompts";
 
 type ChatInputProps = {
   value: string;
@@ -9,7 +8,8 @@ type ChatInputProps = {
   onSend: () => void;
   onStop?: () => void;
   isStreaming?: boolean;
-  onPromptSelect: (prompt: string) => void;
+  /** Kept for call-site compatibility; quick prompts UI removed. */
+  onPromptSelect?: (prompt: string) => void;
   disabled?: boolean;
   inputDisabled?: boolean;
   placeholder?: string;
@@ -25,7 +25,6 @@ export function ChatInput({
   onSend,
   onStop,
   isStreaming = false,
-  onPromptSelect,
   disabled = false,
   inputDisabled = false,
   placeholder = "Ask anything...",
@@ -51,31 +50,18 @@ export function ChatInput({
     }
   }
 
-  function handlePromptSelect(prompt: string) {
-    onPromptSelect(prompt);
-    textareaRef.current?.focus();
-  }
-
   const canSend = value.trim().length > 0 && !disabled && !inputDisabled && !isStreaming;
 
   return (
     <div className="sticky bottom-0 z-10 shrink-0 border-t border-slate-200 bg-white/95 backdrop-blur-sm">
-      <div className="border-b border-slate-100 px-4 py-2 sm:px-6">
-        <h3 className="text-xs font-medium uppercase tracking-wide text-slate-400">
-          Message input
-          {isStreaming ? " · Generating…" : ""}
-        </h3>
-      </div>
+      {isStreaming ? (
+        <p className="sr-only" role="status" aria-live="polite">
+          Generating
+        </p>
+      ) : null}
       <div className="px-4 py-4 sm:px-6">
         <div className="mx-auto max-w-3xl space-y-3">
           {scopeBar}
-
-          {!inputDisabled && !isStreaming && (
-            <QuickPrompts
-              onSelect={handlePromptSelect}
-              disabled={disabled}
-            />
-          )}
 
           <div className="flex items-end gap-3">
             <div className="relative flex-1">

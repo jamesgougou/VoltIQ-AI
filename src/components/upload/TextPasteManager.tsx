@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { countWords } from "@/lib/format";
+import { PASTE_TEXT_SYNC_DEBOUNCE_MS } from "@/lib/upload/pasteTextSync";
 import { ManagerSection } from "./ManagerSection";
 import { TextIcon } from "./UploadIcons";
 
@@ -25,11 +26,16 @@ export function TextPasteManager({
   }, [hasText, onHasContentChange]);
 
   useEffect(() => {
-    onTextChange?.(text);
+    const timeoutId = window.setTimeout(() => {
+      onTextChange?.(text);
+    }, PASTE_TEXT_SYNC_DEBOUNCE_MS);
+    return () => window.clearTimeout(timeoutId);
   }, [text, onTextChange]);
 
   function handleClear() {
     setText("");
+    onTextChange?.("");
+    onHasContentChange?.(false);
   }
 
   return (
@@ -49,6 +55,9 @@ export function TextPasteManager({
         ) : undefined
       }
     >
+      <label htmlFor="text-paste" className="sr-only">
+        Paste text
+      </label>
       <textarea
         id="text-paste"
         value={text}

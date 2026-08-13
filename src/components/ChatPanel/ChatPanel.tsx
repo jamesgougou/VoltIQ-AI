@@ -11,7 +11,18 @@ import {
 import { getDocumentExtractionError, hasUsableDocumentContent } from "@/lib/chat/buildPrompt";
 import type { AITool } from "@/lib/chat/aiTools";
 import { formatStreamFailure } from "@/lib/chat/streamingUi";
+import {
+  resolveStreamAriaStatus,
+  shouldShowTypingIndicator,
+  streamAriaStatusLabel,
+  type StreamAriaStatus,
+} from "@/lib/chat/streamStatus";
 import { ChatStreamError, streamChatResponse } from "@/lib/chat/streamChat";
+import { shouldAbortStreamOnChatUnmount } from "@/lib/workspace/panelVisibility";
+import {
+  chatEmptyStateMessage,
+  indexingHelperText,
+} from "@/lib/workspace/emptyStateCopy";
 import { resolveClientIndexingGateMessage, fetchDocumentIndexStatuses, mergeIndexStates } from "@/lib/rag/client";
 import {
   formatRetrievalScopeLabel,
@@ -50,6 +61,7 @@ type ChatPanelProps = {
   onRetrievalScopeChange?: (scope: RetrievalScope) => void;
   onRequestCalculatorMode?: (calculatorId: CalculatorId) => void;
   onRequestStudyMode?: (mode: StudyModeId) => void;
+  onRequestLibraryMode?: () => void;
   chatBridgeRef?: MutableRefObject<ChatBridge | null>;
 };
 
@@ -79,11 +91,15 @@ export function ChatPanel({
   onRetrievalScopeChange,
   onRequestCalculatorMode,
   onRequestStudyMode,
+  onRequestLibraryMode,
   chatBridgeRef,
 }: ChatPanelProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
+  const [hasReceivedAssistantToken, setHasReceivedAssistantToken] =
+    useState(false);
+  const [streamStatus, setStreamStatus] = useState<StreamAriaStatus>("idle");
   const [aiToolsOpen, setAiToolsOpen] = useState(false);
   const [focusTrigger, setFocusTrigger] = useState(0);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -149,6 +165,15 @@ export function ChatPanel({
     abortRef.current?.abort();
   }, []);
 
+  useEffect(() => {
+    return () => {
+      // Safety net if Chat truly unmounts while a request is in flight.
+      if (shouldAbortStreamOnChatUnmount(true, Boolean(abortRef.current))) {
+        abortRef.current?.abort();
+      }
+    };
+  }, []);
+
   const sendMessage = useCallback(
     async (messageOverride?: string) => {
       const trimmed = (messageOverride ?? input).trim();
@@ -179,10 +204,13 @@ export function ChatPanel({
       setMessages(nextMessages);
       setInput("");
       setIsStreaming(true);
+      setHasReceivedAssistantToken(false);
+      setStreamStatus("generating");
 
       const extractionError = getDocumentExtractionError(documents);
       if (extractionError) {
         setIsStreaming(false);
+        setStreamStatus("idle");
         setMessages((prev) => [
           ...prev,
           createMessage("assistant", extractionError, assistantMessageId),
@@ -207,6 +235,7 @@ export function ChatPanel({
 
       if (indexingGateMessage) {
         setIsStreaming(false);
+        setStreamStatus("idle");
         setMessages((prev) => [
           ...prev,
           createMessage("assistant", indexingGateMessage, assistantMessageId),
@@ -216,6 +245,7 @@ export function ChatPanel({
 
       let streamedContent = "";
       let hasStreamStarted = false;
+      let failureReason: string | null = null;
       const hasTextDocuments = hasUsableDocumentContent(documents);
       const documentIds = retrievalDocumentIds;
       const controller = new AbortController();
@@ -237,6 +267,7 @@ export function ChatPanel({
               // First chunk opens the assistant bubble — streaming continues.
               if (!hasStreamStarted) {
                 hasStreamStarted = true;
+                setHasReceivedAssistantToken(true);
                 setMessages((prev) => [
                   ...prev,
                   createMessage(
@@ -280,6 +311,7 @@ export function ChatPanel({
         }
       } catch (error) {
         const formatted = formatStreamFailure(error, streamedContent);
+        failureReason = formatted.reason;
 
         if (hasStreamStarted || formatted.preserveContent) {
           setMessages((prev) => {
@@ -314,6 +346,13 @@ export function ChatPanel({
           abortRef.current = null;
         }
         setIsStreaming(false);
+        setStreamStatus(
+          resolveStreamAriaStatus({
+            isStreaming: false,
+            failureReason,
+            justCompleted: !failureReason,
+          }),
+        );
       }
     },
     [
@@ -377,6 +416,17 @@ export function ChatPanel({
   }, [chatBridgeRef, sendMessage, appendCalcResult]);
 
   const hasConversation = messages.length > 0 || isStreaming;
+  const showTyping = shouldShowTypingIndicator(
+    isStreaming,
+    hasReceivedAssistantToken,
+  );
+  const emptyMessage = chatEmptyStateMessage({
+    hasDocuments,
+    indexingInProgress,
+  });
+  const ariaStatusText = streamAriaStatusLabel(
+    isStreaming ? "generating" : streamStatus,
+  );
 
   return (
     <section
@@ -394,6 +444,9 @@ export function ChatPanel({
           Ask document and standards questions. Use Calculator and Study modes
           from the tabs above for numerical work and quizzes.
         </p>
+        <p className="sr-only" role="status" aria-live="polite">
+          {ariaStatusText}
+        </p>
       </div>
 
       <div className="border-b border-slate-100 px-4 py-3 sm:px-6">
@@ -402,6 +455,7 @@ export function ChatPanel({
           onClick={() => setAiToolsOpen((open) => !open)}
           className="flex w-full items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-left text-xs font-semibold text-slate-700 hover:bg-slate-100"
           aria-expanded={aiToolsOpen}
+          aria-controls="chat-ai-tools-panel"
         >
           <span>AI Tools</span>
           <span className="font-normal text-slate-500">
@@ -409,7 +463,7 @@ export function ChatPanel({
           </span>
         </button>
         {aiToolsOpen && (
-          <div className="mt-3">
+          <div id="chat-ai-tools-panel" className="mt-3">
             <AIToolsPanel
               onToolSelect={handleToolSelect}
               disabled={isStreaming || !hasDocuments}
@@ -420,12 +474,17 @@ export function ChatPanel({
 
       <div
         className={`flex flex-col ${
-          hasConversation ? "min-h-[min(480px,calc(100vh-20rem))]" : ""
+          hasConversation
+            ? "min-h-0 sm:min-h-[min(480px,calc(100vh-20rem))]"
+            : ""
         }`}
       >
         <ChatHistory
           messages={messages}
-          isLoading={isStreaming}
+          showTypingIndicator={showTyping}
+          emptyMessage={emptyMessage}
+          onOpenLibrary={onRequestLibraryMode}
+          showLibraryCta={!hasDocuments || indexingInProgress}
           bottomRef={bottomRef}
         />
         <ChatInput
@@ -439,14 +498,10 @@ export function ChatPanel({
           inputDisabled={!hasDocuments || indexingInProgress}
           placeholder={
             indexingInProgress
-              ? "Document indexing in progress..."
+              ? "Indexing in progress — open Library to watch progress…"
               : "Ask about your documents or standards…"
           }
-          helperText={
-            indexingInProgress
-              ? "Document indexing in progress..."
-              : "For numerical calculations use Calculator mode · Enter to send"
-          }
+          helperText={indexingHelperText(indexingInProgress)}
           focusTrigger={focusTrigger}
           scopeBar={
             documents.length > 0 && onRetrievalScopeChange ? (

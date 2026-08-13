@@ -5,6 +5,7 @@ import { ChatPanel, type ChatBridge } from "@/components/ChatPanel";
 import { CalculatorsPanel } from "@/components/Calculators";
 import { StudyPanel } from "@/components/Study";
 import { PDFViewer, PDFViewerProvider } from "@/components/PDFViewer";
+import { WorkspacePanel } from "@/components/workspace/WorkspacePanel";
 import { WorkspaceShell } from "@/components/workspace/WorkspaceShell";
 import {
   buildExplainPrompt,
@@ -1662,7 +1663,7 @@ export function UploadSection() {
           mode={workspaceMode}
           onModeChange={handleWorkspaceModeChange}
         >
-          {workspaceMode === "chat" && (
+          <WorkspacePanel mode="chat" activeMode={workspaceMode} keepAlive>
             <ChatPanel
               hasDocuments={hasDocuments}
               documents={documents}
@@ -1672,11 +1673,12 @@ export function UploadSection() {
               onRetrievalScopeChange={setRetrievalScope}
               onRequestCalculatorMode={openCalculatorMode}
               onRequestStudyMode={openStudyMode}
+              onRequestLibraryMode={() => setWorkspaceMode("library")}
               chatBridgeRef={chatBridgeRef}
             />
-          )}
+          </WorkspacePanel>
 
-          {workspaceMode === "calculator" && (
+          <WorkspacePanel mode="calculator" activeMode={workspaceMode}>
             <section
               className="rounded-2xl border border-amber-200 bg-white p-4 shadow-sm sm:p-6"
               aria-label="Electrical calculators"
@@ -1691,9 +1693,9 @@ export function UploadSection() {
                 focusToken={calculatorFocusToken}
               />
             </section>
-          )}
+          </WorkspacePanel>
 
-          {workspaceMode === "study" && (
+          <WorkspacePanel mode="study" activeMode={workspaceMode}>
             <section
               className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6"
               aria-label="Study mode"
@@ -1707,24 +1709,17 @@ export function UploadSection() {
                     : managedDocumentIds
                 }
                 onSendTutorPrompt={handleTutorPrompt}
+                onRequestLibraryMode={() => setWorkspaceMode("library")}
                 hasDocuments={hasDocuments}
+                indexingInProgress={isRetrievalScopeIndexing}
                 disabled={isRetrievalScopeIndexing}
               />
             </section>
-          )}
+          </WorkspacePanel>
 
-          {workspaceMode === "library" && librarySection}
-
-          {workspaceMode === "inspection" && (
-            <section className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center">
-              <h2 className="text-sm font-semibold text-slate-700">
-                Inspection Mode
-              </h2>
-              <p className="mt-1 text-xs text-slate-500">
-                Reserved for a future release. This tab is not available yet.
-              </p>
-            </section>
-          )}
+          <WorkspacePanel mode="library" activeMode={workspaceMode}>
+            {librarySection}
+          </WorkspacePanel>
         </WorkspaceShell>
 
         <IndexingToast

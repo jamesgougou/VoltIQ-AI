@@ -18,6 +18,10 @@ import {
   saveActiveStudySession,
 } from "@/lib/study/sessionResume";
 import {
+  resumeNoticeLabel,
+  shouldConfirmAbandonSession,
+} from "@/lib/study/studyUx";
+import {
   explainSimplyPrompt,
   tutorPrompt,
 } from "@/lib/study/prompts";
@@ -41,7 +45,18 @@ type StudyWorkspaceProps = {
   documentIds: string[];
   onModeChange: (mode: StudyModeId) => void;
   onSendTutorPrompt: (prompt: string) => void;
+  onLoadingChange?: (loading: boolean) => void;
   disabled?: boolean;
+};
+
+type StartQuizOptions = {
+  count?: number;
+  difficulty?: StudyDifficulty;
+  focusTopics?: string[];
+  mode?: "quiz" | "exam";
+  timed?: boolean;
+  durationSeconds?: number;
+  passMark?: number;
 };
 
 function nextDifficulty(
@@ -61,6 +76,7 @@ export function StudyWorkspace({
   documentIds,
   onModeChange,
   onSendTutorPrompt,
+  onLoadingChange,
   disabled = false,
 }: StudyWorkspaceProps) {
   const [boot] = useState(() => {
@@ -75,6 +91,10 @@ export function StudyWorkspace({
           ? restored.activeMode
           : null,
       skipPersistOnce: Boolean(restored),
+      resumeNotice: resumeNoticeLabel(
+        restored?.session ?? null,
+        restored?.examComplete ?? null,
+      ),
     };
   });
 
@@ -90,9 +110,18 @@ export function StudyWorkspace({
   );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [resumeNotice, setResumeNotice] = useState<string | null>(
+    boot.resumeNotice,
+  );
+  const [canRetryStart, setCanRetryStart] = useState(false);
   const autoStartedModeRef = useRef<StudyModeId | null>(boot.autoStartedMode);
   const skipPersistOnceRef = useRef(boot.skipPersistOnce);
   const restoredModeRef = useRef(boot.restored?.activeMode ?? null);
+  const lastStartRef = useRef<
+    | { kind: "quiz"; options?: StartQuizOptions }
+    | { kind: "flashcards" }
+    | null
+  >(null);
 
   const persistProgress = useCallback((updater: (prev: StudyProgress) => StudyProgress) => {
     setProgress((previous) => {
@@ -101,6 +130,10 @@ export function StudyWorkspace({
       return next;
     });
   }, []);
+
+  useEffect(() => {
+    onLoadingChange?.(loading);
+  }, [loading, onLoadingChange]);
 
   useEffect(() => {
     if (skipPersistOnceRef.current) {
@@ -121,20 +154,14 @@ export function StudyWorkspace({
   }, [activeMode, difficulty, session, examComplete, onModeChange]);
 
   const startQuiz = useCallback(
-    async (options?: {
-      count?: number;
-      difficulty?: StudyDifficulty;
-      focusTopics?: string[];
-      mode?: "quiz" | "exam";
-      timed?: boolean;
-      durationSeconds?: number;
-      passMark?: number;
-    }) => {
+    async (options?: StartQuizOptions) => {
       if (documentIds.length === 0) {
         setError("Enable at least one document in the retrieval scope.");
         return;
       }
 
+      lastStartRef.current = { kind: "quiz", options };
+      setCanRetryStart(false);
       setLoading(true);
       setError(null);
       setExamComplete(null);
@@ -172,6 +199,7 @@ export function StudyWorkspace({
         });
         onModeChange(options?.mode === "exam" ? "exam" : "quiz");
       } catch (startError) {
+        setCanRetryStart(true);
         setError(
           startError instanceof Error
             ? startError.message
@@ -190,6 +218,8 @@ export function StudyWorkspace({
       return;
     }
 
+    lastStartRef.current = { kind: "flashcards" };
+    setCanRetryStart(false);
     setLoading(true);
     setError(null);
 
@@ -219,6 +249,7 @@ export function StudyWorkspace({
       });
       onModeChange("flashcards");
     } catch (startError) {
+      setCanRetryStart(true);
       setError(
         startError instanceof Error
           ? startError.message
@@ -297,10 +328,32 @@ export function StudyWorkspace({
   }
 
   function abandonSession() {
+    if (shouldConfirmAbandonSession(session)) {
+      const confirmed = window.confirm(
+        "Leave this quiz/exam? Progress in the current session will be discarded.",
+      );
+      if (!confirmed) {
+        return;
+      }
+    }
+
     setSession(null);
     setExamComplete(null);
+    setError(null);
     clearActiveStudySession();
     onModeChange("idle");
+  }
+
+  function retryLastStart() {
+    const last = lastStartRef.current;
+    if (!last) {
+      return;
+    }
+    if (last.kind === "flashcards") {
+      void startFlashcards();
+      return;
+    }
+    void startQuiz(last.options);
   }
 
   function handleFollowUp(action: FollowUpAction, question: StudyQuestion) {
@@ -377,16 +430,44 @@ export function StudyWorkspace({
         )}
       </div>
 
+      {resumeNotice && (
+        <div className="mb-3 flex items-center justify-between gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
+          <p>{resumeNotice}</p>
+          <button
+            type="button"
+            onClick={() => setResumeNotice(null)}
+            className="font-medium text-emerald-900 underline"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
       {loading && (
-        <p className="rounded-lg border border-violet-200 bg-white px-3 py-3 text-sm text-violet-700">
+        <p
+          className="rounded-lg border border-violet-200 bg-white px-3 py-3 text-sm text-violet-700"
+          role="status"
+          aria-live="polite"
+          aria-busy="true"
+        >
           Preparing study material from your knowledge library…
         </p>
       )}
 
       {error && (
-        <p className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
-          {error}
-        </p>
+        <div className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+          <p>{error}</p>
+          {canRetryStart ? (
+            <button
+              type="button"
+              onClick={retryLastStart}
+              disabled={loading}
+              className="mt-2 rounded-md border border-red-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-red-700 hover:bg-red-100 disabled:opacity-50"
+            >
+              Retry
+            </button>
+          ) : null}
+        </div>
       )}
 
       {!loading && activeMode === "exam" && !session && !examComplete && (

@@ -7,16 +7,22 @@ import { TypingIndicator } from "./TypingIndicator";
 
 type ChatHistoryProps = {
   messages: ChatMessage[];
-  isLoading: boolean;
+  showTypingIndicator: boolean;
+  emptyMessage: string;
+  onOpenLibrary?: () => void;
+  showLibraryCta?: boolean;
   bottomRef: React.RefObject<HTMLDivElement | null>;
 };
 
 export function ChatHistory({
   messages,
-  isLoading,
+  showTypingIndicator,
+  emptyMessage,
+  onOpenLibrary,
+  showLibraryCta,
   bottomRef,
 }: ChatHistoryProps) {
-  const isEmpty = messages.length === 0 && !isLoading;
+  const isEmpty = messages.length === 0 && !showTypingIndicator;
 
   return (
     <div
@@ -25,7 +31,11 @@ export function ChatHistory({
       }`}
     >
       {isEmpty ? (
-        <ChatEmptyState />
+        <ChatEmptyState
+          message={emptyMessage}
+          onOpenLibrary={onOpenLibrary}
+          showLibraryCta={showLibraryCta}
+        />
       ) : (
         <div className="space-y-5 px-4 py-6 sm:px-6">
           {messages.map((message) => (
@@ -39,7 +49,7 @@ export function ChatHistory({
               calculation={message.calculation}
             />
           ))}
-          {isLoading && <TypingIndicator />}
+          {showTypingIndicator && <TypingIndicator />}
           <div ref={bottomRef} className="h-px shrink-0" aria-hidden="true" />
         </div>
       )}
