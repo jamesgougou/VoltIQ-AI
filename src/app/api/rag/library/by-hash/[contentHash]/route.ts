@@ -18,7 +18,11 @@ export async function GET(_request: Request, context: RouteContext) {
   try {
     const vectorMatch =
       await getVectorStore().findDocumentByContentHash(contentHash);
-    const libraryMatch = await findLibraryDocumentByHash(contentHash);
+
+    // Prefer vector meta — skip full library FS scan when already identified.
+    const libraryMatch = vectorMatch
+      ? null
+      : await findLibraryDocumentByHash(contentHash);
 
     const documentId =
       vectorMatch?.documentId ?? libraryMatch?.documentId ?? null;

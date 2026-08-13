@@ -65,6 +65,21 @@ export type RetrievedSourceMetadata = {
 };
 
 export const MAX_CITATION_SOURCES = 5;
+/** Streamed citation excerpt length (keeps PDF highlight viable ≥160 chars). */
+export const MAX_CITATION_EXCERPT_CHARS = 320;
+
+export function truncateCitationExcerpt(
+  text: string,
+  maxChars = MAX_CITATION_EXCERPT_CHARS,
+): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+
+  if (normalized.length <= maxChars) {
+    return normalized;
+  }
+
+  return normalized.slice(0, maxChars).trimEnd();
+}
 
 export type IndexDocumentRequest = {
   documentId: string;
@@ -149,7 +164,7 @@ export function toSourceMetadata(
     chunkIndex: chunk.chunkIndex,
     similarityScore: chunk.similarityScore,
     chunkId: chunk.id,
-    excerpt: chunk.text,
+    excerpt: truncateCitationExcerpt(chunk.text),
     sourceKind: chunk.sourceKind,
   }));
 }

@@ -11,3 +11,14 @@ export function getPdfSizeError(): string {
 export function getImageSizeError(fileName: string): string {
   return `"${fileName}" exceeds the ${MAX_IMAGE_SIZE_LABEL} per-image limit.`;
 }
+
+/** Server-side image persistence guard (same 20 MB client limit). */
+export function getImageUploadSizeViolation(
+  byteLength: number,
+): string | null {
+  if (byteLength > MAX_IMAGE_SIZE_BYTES) {
+    return `Image must be ${MAX_IMAGE_SIZE_LABEL} or smaller.`;
+  }
+
+  return null;
+}

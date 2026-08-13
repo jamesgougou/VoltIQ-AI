@@ -16,6 +16,7 @@ import {
   clearLibraryDocuments,
   deleteLibraryDocument,
   getLibraryDocument,
+  getLibraryDocumentLean,
   libraryHasImage,
   libraryHasPdf,
   listLibraryDocumentIds,
@@ -695,11 +696,13 @@ export async function listLibraryDocuments(): Promise<LibraryDocumentSummary[]> 
   for (const record of records) {
     seen.add(record.documentId);
     const status = await reconcileDocumentStatus(record.documentId);
-    const libraryDoc = await getLibraryDocument(record.documentId);
+    // Lean summary — avoid loading full extracted text/pages for list.
+    const libraryDoc = await getLibraryDocumentLean(record.documentId);
 
     // Filesystem artifacts are authoritative for library section placement.
-    const hasPdf = await libraryHasPdf(record.documentId);
-    const hasImage = await libraryHasImage(record.documentId);
+    const hasPdf = libraryDoc?.hasPdf ?? (await libraryHasPdf(record.documentId));
+    const hasImage =
+      libraryDoc?.hasImage ?? (await libraryHasImage(record.documentId));
     const sourceKind = resolveLibrarySourceKind({
       hasPdf,
       hasImage,
@@ -779,7 +782,7 @@ export async function listLibraryDocuments(): Promise<LibraryDocumentSummary[]> 
       continue;
     }
 
-    const libraryDoc = await getLibraryDocument(documentId);
+    const libraryDoc = await getLibraryDocumentLean(documentId);
     if (!libraryDoc) {
       continue;
     }

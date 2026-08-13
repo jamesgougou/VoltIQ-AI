@@ -12,7 +12,19 @@ type BM25Document = {
   chunkId: string;
   tokens: string[];
   length: number;
+  /** Precomputed at index build — avoids recounting tokens on every query. */
+  termFrequency: Map<string, number>;
 };
+
+function buildTermFrequency(tokens: string[]): Map<string, number> {
+  const termFrequency = new Map<string, number>();
+
+  for (const token of tokens) {
+    termFrequency.set(token, (termFrequency.get(token) ?? 0) + 1);
+  }
+
+  return termFrequency;
+}
 
 export class BM25Index {
   private documents: BM25Document[] = [];
@@ -27,6 +39,7 @@ export class BM25Index {
         chunkId: chunk.id,
         tokens,
         length: tokens.length,
+        termFrequency: buildTermFrequency(tokens),
       };
     });
 
@@ -75,16 +88,10 @@ export class BM25Index {
   }
 
   private scoreDocument(document: BM25Document, queryTokens: string[]): number {
-    const termFrequency = new Map<string, number>();
-
-    for (const token of document.tokens) {
-      termFrequency.set(token, (termFrequency.get(token) ?? 0) + 1);
-    }
-
     let score = 0;
 
     for (const token of queryTokens) {
-      const frequency = termFrequency.get(token) ?? 0;
+      const frequency = document.termFrequency.get(token) ?? 0;
 
       if (frequency === 0) {
         continue;
@@ -92,7 +99,9 @@ export class BM25Index {
 
       const documentFrequency = this.documentFrequency.get(token) ?? 0;
       const idf = Math.log(
-        1 + (this.chunkCount - documentFrequency + 0.5) / (documentFrequency + 0.5),
+        1 +
+          (this.chunkCount - documentFrequency + 0.5) /
+            (documentFrequency + 0.5),
       );
       const numerator = frequency * (BM25_K1 + 1);
       const denominator =
@@ -100,7 +109,8 @@ export class BM25Index {
         BM25_K1 *
           (1 -
             BM25_B +
-            (BM25_B * document.length) / Math.max(this.averageDocumentLength, 1));
+            (BM25_B * document.length) /
+              Math.max(this.averageDocumentLength, 1));
 
       score += idf * (numerator / denominator);
     }

@@ -4,6 +4,10 @@ import {
 } from "@/lib/rag/libraryStore";
 import { resolveRouteDocumentId } from "@/lib/rag/safeRouteDocumentId";
 import { getVectorStore } from "@/lib/rag/store";
+import {
+  getImageUploadSizeViolation,
+  MAX_IMAGE_SIZE_BYTES,
+} from "@/lib/upload/limits";
 
 export const runtime = "nodejs";
 
@@ -82,9 +86,31 @@ export async function PUT(request: Request, context: RouteContext) {
       );
     }
 
+    const contentLengthHeader = request.headers.get("content-length");
+    if (contentLengthHeader) {
+      const declared = Number(contentLengthHeader);
+      const declaredViolation = getImageUploadSizeViolation(declared);
+      if (declaredViolation) {
+        return Response.json({ error: declaredViolation }, { status: 413 });
+      }
+    }
+
     const arrayBuffer = await request.arrayBuffer();
     if (arrayBuffer.byteLength === 0) {
       return Response.json({ error: "Empty image body." }, { status: 400 });
+    }
+
+    const sizeViolation = getImageUploadSizeViolation(arrayBuffer.byteLength);
+    if (sizeViolation) {
+      return Response.json({ error: sizeViolation }, { status: 413 });
+    }
+
+    // Defence in depth if Content-Length was missing/wrong.
+    if (arrayBuffer.byteLength > MAX_IMAGE_SIZE_BYTES) {
+      return Response.json(
+        { error: getImageUploadSizeViolation(arrayBuffer.byteLength) },
+        { status: 413 },
+      );
     }
 
     const mimeType =

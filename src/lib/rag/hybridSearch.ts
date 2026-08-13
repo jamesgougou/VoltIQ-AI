@@ -6,6 +6,7 @@ import {
   scoreExactMatches,
   type QueryProfile,
 } from "@/lib/rag/queryAnalysis";
+import { getOrBuildScopedBM25Index } from "@/lib/rag/scopedBm25Cache";
 import { getVectorStore } from "@/lib/rag/store";
 import type { RetrievedChunk, StoredDocumentChunk } from "@/lib/rag/types";
 import { TOP_K_CHUNKS } from "@/lib/rag/types";
@@ -179,23 +180,23 @@ export async function hybridRetrieve(
     };
   }
 
+  const eligibleDocumentIds = new Set(
+    allChunks.map((chunk) => chunk.documentId),
+  );
+
   const queryEmbedding = await embedQueryCached(profile.expandedQuery);
-  const semanticResults = (
-    await vectorStore.similaritySearch(queryEmbedding, CANDIDATE_POOL_SIZE)
-  ).filter((result) => {
-    if (!enabledIds.has(result.documentId)) {
-      return false;
-    }
+  // Score only eligible chunks — do not cosine-scan the full corpus then filter.
+  const semanticResults = await vectorStore.similaritySearch(
+    queryEmbedding,
+    CANDIDATE_POOL_SIZE,
+    { documentIds: eligibleDocumentIds },
+  );
 
-    if (allowedIds) {
-      return allowedIds.has(result.documentId);
-    }
-
-    return true;
-  });
-
-  const { buildBM25Index } = await import("@/lib/rag/bm25");
-  const scopedBm25 = buildBM25Index(allChunks);
+  const scopedBm25 = getOrBuildScopedBM25Index(
+    allChunks,
+    vectorStore.getCorpusSignature(),
+    eligibleDocumentIds,
+  );
   const keywordResults = scopedBm25.search(
     profile.expandedQuery,
     CANDIDATE_POOL_SIZE,

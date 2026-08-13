@@ -1,4 +1,5 @@
 import { getOpenAIClient, getOpenAIVisionModel } from "@/lib/openai";
+import { prepareImageForVision } from "@/lib/rag/visionImagePrepare";
 
 export type ImageVisionAnalysis = {
   ocrText: string;
@@ -83,7 +84,9 @@ export async function analyzeElectricalImage(input: {
 }): Promise<ImageVisionAnalysis> {
   const model = getOpenAIVisionModel();
   const client = getOpenAIClient();
-  const dataUrl = `data:${input.mimeType};base64,${input.bytes.toString("base64")}`;
+  // Resize only for the Vision request — library bytes stay untouched.
+  const prepared = await prepareImageForVision(input.bytes, input.mimeType);
+  const dataUrl = `data:${prepared.mimeType};base64,${prepared.bytes.toString("base64")}`;
 
   const completion = await client.chat.completions.create(
     {

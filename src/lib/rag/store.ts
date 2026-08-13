@@ -11,6 +11,7 @@ import {
   currentEmbeddingModel,
   inferDocumentType,
 } from "@/lib/rag/libraryMeta";
+import { invalidateScopedBM25Cache } from "@/lib/rag/scopedBm25Cache";
 import { constants as bufferConstants } from "node:buffer";
 import { createReadStream } from "node:fs";
 import {
@@ -114,6 +115,43 @@ function cosineSimilarity(left: number[], right: number[]): number {
   }
 
   return dotProduct / (Math.sqrt(leftNorm) * Math.sqrt(rightNorm));
+}
+
+/**
+ * Score only eligible chunks (scope pre-filter), then take topK.
+ * Ranking among eligible chunks matches prior cosine order.
+ */
+export function rankChunksByCosine(
+  chunks: StoredDocumentChunk[],
+  queryEmbedding: number[],
+  topK: number,
+  eligibleDocumentIds?: Set<string> | null,
+): RetrievedChunk[] {
+  const scored: RetrievedChunk[] = [];
+
+  for (const chunk of chunks) {
+    if (
+      eligibleDocumentIds &&
+      !eligibleDocumentIds.has(chunk.documentId)
+    ) {
+      continue;
+    }
+
+    scored.push({
+      id: chunk.id,
+      documentId: chunk.documentId,
+      filename: chunk.filename,
+      page: chunk.page,
+      chunkIndex: chunk.chunkIndex,
+      text: chunk.text,
+      similarityScore: cosineSimilarity(queryEmbedding, chunk.embedding),
+      sourceKind: chunk.sourceKind,
+    });
+  }
+
+  return scored
+    .sort((left, right) => right.similarityScore - left.similarityScore)
+    .slice(0, topK);
 }
 
 function migrateChunk(
@@ -319,6 +357,8 @@ export class VectorStore {
   private snapshot: VectorStoreSnapshot | null = null;
   private bm25Index: BM25Index | null = null;
   private bm25Signature = "";
+  /** Bumped on chunk/meta corpus persist — used for scoped BM25 cache keys. */
+  private corpusRevision = 0;
   /** Ensures only one disk write (and snapshot mutation) runs at a time. */
   private readonly writeLock = new AsyncMutex();
 
@@ -381,7 +421,15 @@ export class VectorStore {
     this.snapshot = next;
     this.bm25Index = null;
     this.bm25Signature = "";
+    this.corpusRevision += 1;
+    invalidateScopedBM25Cache();
     console.info("[RAG] Storage ready.");
+  }
+
+  /** Corpus revision + chunk count for scoped BM25 cache keys. */
+  getCorpusSignature(): string {
+    const chunkCount = this.snapshot?.chunks.length ?? 0;
+    return `${this.corpusRevision}:${chunkCount}`;
   }
 
   private async mutateExclusive(
@@ -475,6 +523,8 @@ export class VectorStore {
         this.snapshot = draft;
         this.bm25Index = null;
         this.bm25Signature = "";
+        // Meta-only updates (enabled/tags) change eligible scope keys; clear BM25 cache.
+        invalidateScopedBM25Cache();
       } catch (error) {
         throw new StorageWriteError(
           "Unable to update local document storage. Please try again in a moment.",
@@ -573,21 +623,22 @@ export class VectorStore {
   async similaritySearch(
     queryEmbedding: number[],
     topK: number,
+    options?: { documentIds?: Set<string> | string[] | null },
   ): Promise<RetrievedChunk[]> {
     const snapshot = await this.loadSnapshot();
+    const eligible =
+      options?.documentIds == null
+        ? null
+        : options.documentIds instanceof Set
+          ? options.documentIds
+          : new Set(options.documentIds);
 
-    return snapshot.chunks
-      .map((chunk) => ({
-        id: chunk.id,
-        documentId: chunk.documentId,
-        filename: chunk.filename,
-        page: chunk.page,
-        chunkIndex: chunk.chunkIndex,
-        text: chunk.text,
-        similarityScore: cosineSimilarity(queryEmbedding, chunk.embedding),
-      }))
-      .sort((left, right) => right.similarityScore - left.similarityScore)
-      .slice(0, topK);
+    return rankChunksByCosine(
+      snapshot.chunks,
+      queryEmbedding,
+      topK,
+      eligible,
+    );
   }
 
   async hasIndexedContent(): Promise<boolean> {
